@@ -64,7 +64,7 @@ http_headers = { Authorization = "Bearer <访问令牌>" }
 
 MCP 提供 `search_torrents`、`get_torrent`、`list_sites` 和 `download_torrent` 四个工具。
 片名识别、译名转换和资源取舍由调用方 AI 完成。
-配套检索技能见 [skills/find-movie/SKILL.md](skills/find-movie/SKILL.md)。
+配套检索技能见 [skills/torrvia/SKILL.md](skills/torrvia/SKILL.md)。
 
 ## 开发
 

@@ -1,9 +1,9 @@
 ---
-name: find-movie
-description: Find, compare, and download movies or TV episodes across private trackers using the local Torrvia service. Use when the user asks to find media, check which tracker has a release, compare resolutions or versions, or send a selected resource to the downloader. Uses search_torrents, get_torrent, list_sites, and download_torrent.
+name: torrvia
+description: Find, compare, and download media across private trackers using the local Torrvia service. Use when the user asks to find media, check which tracker has a release, compare resolutions or versions, or send a selected resource to the downloader. Uses search_torrents, get_torrent, list_sites, and download_torrent.
 ---
 
-# Find media
+# Torrvia media search
 
 Turn the user's request into targeted searches and a short list of releases they can choose from. Torrvia searches tracker data and ranks results by seeders multiplied by promotion weight. The calling AI handles title recognition, translations, and release selection.
 

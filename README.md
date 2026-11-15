@@ -59,7 +59,7 @@ url = "http://localhost:8080/mcp"
 http_headers = { Authorization = "Bearer <access-token>" }
 ```
 
-The four MCP tools are `search_torrents`, `get_torrent`, `list_sites`, and `download_torrent`. The calling AI handles title recognition, translation, and release selection. The companion workflow is in [skills/find-movie/SKILL.md](skills/find-movie/SKILL.md).
+The four MCP tools are `search_torrents`, `get_torrent`, `list_sites`, and `download_torrent`. The calling AI handles title recognition, translation, and release selection. The companion workflow is in [skills/torrvia/SKILL.md](skills/torrvia/SKILL.md).
 
 ## Development
 
