@@ -1,0 +1,43 @@
+# Torrvia configuration
+#
+# Edit this file or use Settings in the Web UI; both update the same configuration.
+# Changes apply immediately, except for the listen address, which requires a restart.
+#
+# This file contains tracker cookies and downloader credentials.
+# Keep permissions at 600. The file is ignored by Git; never commit credentials.
+
+[server]
+addr = ":8080"
+# All /api and /mcp requests require Authorization: Bearer <token>.
+# Leave blank to generate a token at startup. Update clients when changing it.
+token = ""
+data_dir = "./data"
+# Search cache lifetime in seconds. Set to 0 to disable caching.
+cache_ttl_seconds = 300
+
+# Downloader type: qbittorrent. Leave empty for search-only operation.
+# The service retrieves torrent files with tracker cookies before passing them to the downloader.
+# Tracker cookies stay on this machine.
+[downloader]
+type = ""
+url = ""
+username = ""
+password = ""
+# Leave blank to use the downloader default directory.
+save_path = ""
+
+# Sites.
+#
+# Supported site types:
+#   nexusphp: private tracker template; requires base_url and cookie
+#   mock: demo data for testing Web, REST, and MCP
+#
+# Log in to the site, open browser developer tools > Network, and copy the complete Cookie header.
+# Enable Remember me if available; session-only logins also require PHPSESSID.
+
+[[sites]]
+id = "demo"
+name = "Demo tracker"
+type = "mock"
+enabled = true
+timeout_seconds = 20
