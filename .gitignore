@@ -1,0 +1,26 @@
+# Build output
+/torrvia
+/dist/
+
+# Local search history
+/data/
+
+# Local credentials and configuration (the example is safe to publish)
+/config*.toml
+!/config.example.toml
+.env
+.env.*
+*.cookie
+*.cookies
+*.har
+*.torrent
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+
+# Editors
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,9 @@
+# Only application source and dependency manifests belong in the build context.
+**
+!go.mod
+!go.sum
+!*.go
+!internal/
+!internal/**
+!web/
+!web/index.html
