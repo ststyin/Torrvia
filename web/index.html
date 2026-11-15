@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Torrvia · Find what you want to watch.</title>
+<style>
+  :root {
+    --bg: #FBFAF8;
+    --surface: #FFFFFF;
+    --border: #E5E3DD;
+    --border-strong: #D3D1C7;
+    --text: #2C2C2A;
+    --muted: #6B6A65;
+    --faint: #9A9993;
+    --accent: #185FA5;
+    --accent-soft: #E6F1FB;
+    --free: #0F6E56;
+    --free-soft: #E1F5EE;
+    --warn: #854F0B;
+    --warn-soft: #FAEEDA;
+    --danger: #A32D2D;
+    --danger-soft: #FCEBEB;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 22px; }
+  h1 { font-size: 17px; font-weight: 500; margin: 0; letter-spacing: -0.01em; }
+  .spacer { flex: 1; }
+  .site-chip {
+    font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 10px; background: var(--surface);
+  }
+  .site-chip.bad { color: var(--danger); border-color: #F7C1C1; background: var(--danger-soft); }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  .searchbar { display: flex; gap: 8px; }
+  input[type=text], input[type=password], select {
+    font: inherit; color: inherit;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 9px 12px;
+    outline: none;
+    transition: border-color .12s;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  #q { flex: 1; font-size: 15px; }
+  button {
+    font: inherit; cursor: pointer;
+    background: var(--accent); color: #fff;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 9px 18px;
+    transition: opacity .12s;
+  }
+  button:hover { opacity: .88; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost {
+    background: var(--surface); color: var(--text);
+    border-color: var(--border-strong);
+    padding: 5px 11px; font-size: 12px;
+    white-space: nowrap;
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  .filters { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .filters label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; cursor: pointer; }
+  .filters select { padding: 5px 9px; font-size: 13px; }
+  input[type=checkbox] { accent-color: var(--accent); }
+
+  .status { margin: 18px 0 10px; font-size: 12px; color: var(--muted); min-height: 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .dot.pulse { animation: p 1.1s ease-in-out infinite; }
+  @keyframes p { 0%,100% { opacity: .25 } 50% { opacity: 1 } }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; font-size: 11px; font-weight: 500;
+    color: var(--faint); letter-spacing: .04em;
+    padding: 0 10px 8px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 11px 10px; border-bottom: 1px solid #F1EFE8; vertical-align: top; }
+  tbody tr:hover { background: #FCFCFA; }
+  .title { font-weight: 400; word-break: break-all; }
+  .title a { color: inherit; text-decoration: none; }
+  .title a:hover { color: var(--accent); }
+  .meta { color: var(--faint); font-size: 11px; margin-top: 3px; font-family: var(--mono); }
+  .sub {
+    color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .tagline { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .tagline span {
+    font-size: 10px; line-height: 1.6; padding: 0 5px; border-radius: 3px;
+    background: #F1EFE8; color: var(--muted); white-space: nowrap;
+  }
+  .num { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  .seeders { color: var(--free); font-weight: 500; }
+  .seeders.zero { color: var(--faint); font-weight: 400; }
+  .site { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .badge {
+    display: inline-block; font-size: 11px; line-height: 1.5;
+    padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  }
+  .b-free { background: var(--free-soft); color: var(--free); }
+  .b-2xfree { background: #EEEDFE; color: #534AB7; }
+  .b-2x { background: var(--accent-soft); color: var(--accent); }
+  .b-half { background: var(--warn-soft); color: var(--warn); }
+  .b-none { background: #F1EFE8; color: var(--faint); }
+  .also { font-size: 11px; color: var(--faint); margin-top: 3px; }
+  .acts { display: flex; gap: 6px; justify-content: flex-end; }
+
+  .empty { text-align: center; color: var(--faint); padding: 56px 0; font-size: 13px; }
+  .errbox {
+    background: var(--danger-soft); border: 1px solid #F7C1C1; color: var(--danger);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 12px;
+  }
+  .skeleton { color: var(--faint); font-size: 13px; padding: 18px 0; }
+
+  dialog {
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 0; max-width: 620px; width: calc(100% - 40px);
+    background: var(--surface); color: var(--text);
+  }
+  dialog::backdrop { background: rgba(44,44,42,.28); }
+  .dlg-head { padding: 16px 18px; border-bottom: 1px solid var(--border); font-weight: 500; white-space: pre-line; }
+  .dlg-body { padding: 16px 18px; }
+  .dlg-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 6px 12px; font-size: 13px; }
+  .kv dt { color: var(--faint); }
+  .kv dd { margin: 0; word-break: break-all; }
+  .linkbox {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; margin-top: 10px; word-break: break-all; max-height: 96px; overflow: auto;
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(8px);
+    background: var(--text); color: #fff; font-size: 13px;
+    padding: 9px 16px; border-radius: 8px; opacity: 0;
+    transition: opacity .18s, transform .18s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .hidden { display: none !important; }
+
+  /* ---- Settings panel ---- */
+  .cfgdlg { max-width: 800px; }
+  .cfgdlg:focus, .cfg-body:focus { outline: none; }
+  .cfg-body { max-height: 66vh; overflow: auto; }
+  .cfgnote { font-size: 12px; color: var(--faint); margin: 0 0 4px; }
+  .cfgnote code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .sec {
+    font-size: 11px; font-weight: 500; color: var(--faint); letter-spacing: .06em;
+    margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  }
+  .sec:first-of-type { margin-top: 6px; }
+  .sec .hint { font-weight: 400; letter-spacing: 0; color: var(--faint); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .grid label, .sitecard label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 12px; color: var(--muted);
+  }
+  .grid input, .grid select, .sitecard input, .sitecard select {
+    width: 100%; padding: 7px 10px; font-size: 13px;
+  }
+  .tokenrow { display: flex; gap: 6px; }
+  .tokenrow input { flex: 1; font-family: var(--mono); font-size: 11px; }
+  .sitecard {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; margin-bottom: 10px; background: var(--bg);
+  }
+  .sitecard .chead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .sitecard .chead strong { font-size: 13px; font-weight: 500; }
+  .sitecard .chead label {
+    flex-direction: row; align-items: center; gap: 5px;
+    white-space: nowrap; font-size: 12px;
+  }
+  .sitecard .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .sitecard .wide { grid-column: 1 / -1; }
+  .addsite { width: 100%; padding: 8px; border-style: dashed; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Torrvia</h1>
+    <span class="sub" id="siteSummary"></span>
+    <span class="spacer"></span>
+    <span id="siteChips"></span>
+  </header>
+
+  <div class="panel">
+    <div class="searchbar">
+      <input id="q" type="text" placeholder="Title and year, e.g. Interstellar 2014" autocomplete="off" autofocus>
+      <button id="go">Search</button>
+    </div>
+    <div class="filters">
+      <label><input type="checkbox" id="free"> Freeleech only</label>
+      <label>Resolution
+        <select id="res">
+          <option value="">Any</option>
+          <option value="2160p">2160p</option>
+          <option value="1080p">1080p</option>
+          <option value="720p">720p</option>
+        </select>
+      </label>
+      <label>Minimum seeders
+        <select id="minSeed">
+          <option value="0">Any</option>
+          <option value="1">1</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+          <option value="20">20</option>
+        </select>
+      </label>
+      <span class="spacer"></span>
+      <button class="ghost" id="cfgBtn">Settings</button>
+      <button class="ghost" id="tokenBtn">Token</button>
+    </div>
+    <div id="err" class="errbox hidden"></div>
+  </div>
+
+  <div class="status" id="status"></div>
+  <div id="results"></div>
+</div>
+
+<dialog id="detail">
+  <div class="dlg-head" id="dTitle">Resource details</div>
+  <div class="dlg-body">
+    <dl class="kv" id="dKv"></dl>
+    <div class="linkbox hidden" id="dLink"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" id="dCopy">Copy link</button>
+    <button id="dDownload">Send to downloader</button>
+    <button class="ghost" id="dClose">Close</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<dialog id="cfg" class="cfgdlg">
+  <div class="dlg-head">Settings</div>
+  <div class="dlg-body cfg-body">
+    <p class="cfgnote">Changes apply immediately, except for the listen address. Saved to <code id="cfgPath">config.toml</code>.</p>
+
+    <div class="sec">Server</div>
+    <div class="grid">
+      <label>Listen address<input id="cfgAddr" type="text" placeholder=":8080"></label>
+      <label>Cache TTL (seconds)<input id="cfgTTL" type="number" min="0" step="30"></label>
+      <label>Data directory<input id="cfgDataDir" type="text" placeholder="./data"></label>
+      <label>Access token
+        <span class="tokenrow">
+          <input id="cfgToken" type="text" readonly>
+          <button class="ghost" id="cfgRotate">Rotate</button>
+        </span>
+      </label>
+    </div>
+
+    <div class="sec">Downloader <span class="hint">Leave disabled to search without downloading</span></div>
+    <div class="grid">
+      <label>Type
+        <select id="cfgDlType">
+          <option value="">Disabled</option>
+          <option value="qbittorrent">qBittorrent</option>
+        </select>
+      </label>
+      <label>URL<input id="cfgDlUrl" type="text" placeholder="http://192.168.1.10:8080"></label>
+      <label>Username<input id="cfgDlUser" type="text" placeholder="admin"></label>
+      <label>Password<input id="cfgDlPass" type="password" placeholder="Leave blank to keep unchanged"></label>
+      <label class="wide">Save path<input id="cfgDlPath" type="text" placeholder="Leave blank for the downloader default"></label>
+    </div>
+
+    <div class="sec">Sites <span class="hint" id="cfgSiteCount"></span></div>
+    <div id="cfgSites"></div>
+    <button class="ghost addsite" id="cfgAddSite">+ Add site</button>
+  </div>
+  <div class="dlg-foot">
+    <span class="spacer"></span>
+    <button class="ghost" id="cfgCancel">Close</button>
+    <button id="cfgSave">Save</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = 'torrvia_token';
+
+const token = {
+  get: () => localStorage.getItem(TOKEN_KEY) || '',
+  set: (v) => v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY),
+};
+const authHeaders = () => token.get() ? { Authorization: 'Bearer ' + token.get() } : {};
+
+let current = [];
+let aborter = null;
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('on'), 2000);
+}
+
+function showErr(msg) {
+  const e = $('err');
+  if (!msg) { e.classList.add('hidden'); return; }
+  e.textContent = msg;
+  e.classList.remove('hidden');
+}
+
+const badgeClass = (p) => ({
+  'free': 'b-free', '2xfree': 'b-2xfree', '2x': 'b-2x',
+  '50%': 'b-half', '30%': 'b-half',
+}[p] || 'b-none');
+const promoLabel = (p) => ({
+  'free': 'Freeleech', '2xfree': 'Freeleech + 2X', '2x': '2X',
+  '50%': '50%', '30%': '30%',
+}[p] || 'Standard');
+
+const fmtSize = (b) => {
+  if (!b) return '—';
+  const u = ['B','KB','MB','GB','TB'];
+  let v = b, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i >= 3 ? v.toFixed(2) : v.toFixed(1)) + ' ' + u[i];
+};
+
+function row(t) {
+  const tr = document.createElement('tr');
+
+  const tdTitle = document.createElement('td');
+  const div = document.createElement('div');
+  div.className = 'title';
+  const a = document.createElement('a');
+  a.href = t.detail_url || '#';
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.textContent = t.title;
+  div.appendChild(a);
+  tdTitle.appendChild(div);
+
+  // Show the localized title or description alongside the original release name.
+  if (t.subtitle) {
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = t.subtitle;
+    sub.title = t.subtitle;
+    tdTitle.appendChild(sub);
+  }
+
+  if (t.tags && t.tags.length) {
+    const tl = document.createElement('div');
+    tl.className = 'tagline';
+    t.tags.forEach((g) => {
+      const s = document.createElement('span');
+      s.textContent = g;
+      tl.appendChild(s);
+    });
+    tdTitle.appendChild(tl);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const bits = [];
+  if (t.resolution) bits.push(t.resolution);
+  if (t.publish_time) bits.push(String(t.publish_time).slice(0, 10));
+  meta.textContent = bits.join('  ·  ');
+  if (bits.length) tdTitle.appendChild(meta);
+
+  if (t.also_on && t.also_on.length) {
+    const also = document.createElement('div');
+    also.className = 'also';
+    also.textContent = 'Other sources: ' + t.also_on.length;
+    tdTitle.appendChild(also);
+  }
+
+  const tdSite = document.createElement('td');
+  tdSite.className = 'site';
+  tdSite.textContent = t.site_name || t.site;
+
+  const tdSize = document.createElement('td');
+  tdSize.className = 'num';
+  tdSize.textContent = fmtSize(t.size_bytes);
+
+  const tdSeed = document.createElement('td');
+  tdSeed.className = 'num seeders' + (t.seeders > 0 ? '' : ' zero');
+  tdSeed.textContent = t.seeders;
+
+  const tdPromo = document.createElement('td');
+  const b = document.createElement('span');
+  b.className = 'badge ' + badgeClass(t.promo);
+  b.textContent = promoLabel(t.promo);
+  tdPromo.appendChild(b);
+
+  const tdAct = document.createElement('td');
+  const acts = document.createElement('div');
+  acts.className = 'acts';
+  const btn = document.createElement('button');
+  btn.className = 'ghost';
+  btn.textContent = 'Details';
+  btn.onclick = () => openDetail(t.id);
+  acts.appendChild(btn);
+  tdAct.appendChild(acts);
+
+  tr.append(tdTitle, tdSite, tdSize, tdSeed, tdPromo, tdAct);
+  return tr;
+}
+
+function renderTable(items, note) {
+  const box = $('results');
+  box.innerHTML = '';
+  if (!items.length) {
+    const d = document.createElement('div');
+    d.className = 'empty';
+    d.textContent = note || 'No results. Try removing the year or using only the main title.';
+    box.appendChild(d);
+    return;
+  }
+  const table = document.createElement('table');
+  table.innerHTML = '<thead><tr>' +
+    '<th style="width:auto">Title</th>' +
+    '<th style="width:96px">Site</th>' +
+    '<th style="width:88px">Size</th>' +
+    '<th style="width:64px">Seeders</th>' +
+    '<th style="width:92px">Promotion</th>' +
+    '<th style="width:76px"></th>' +
+    '</tr></thead>';
+  const tb = document.createElement('tbody');
+  items.forEach((t) => tb.appendChild(row(t)));
+  table.appendChild(tb);
+  box.appendChild(table);
+}
+
+async function loadSites() {
+  try {
+    const r = await fetch('/api/sites', { headers: authHeaders() });
+    if (!r.ok) return;
+    const data = await r.json();
+    const chips = $('siteChips');
+    chips.innerHTML = '';
+    data.sites.forEach((s) => {
+      if (!s.enabled) return;
+      const c = document.createElement('span');
+      c.className = 'site-chip' + (s.checked && !s.ok ? ' bad' : '');
+      c.textContent = s.name;
+      if (s.last_error) c.title = s.last_error;
+      chips.appendChild(c);
+    });
+    $('siteSummary').textContent = 'Sites: ' + data.sites.filter((s) => s.enabled).length;
+  } catch (_) { /* Site status is optional; ignore display errors. */ }
+}
+
+function buildQuery() {
+  const p = new URLSearchParams();
+  p.set('q', $('q').value.trim());
+  if ($('free').checked) p.set('free', '1');
+  if ($('res').value) p.set('resolution', $('res').value);
+  const ms = parseInt($('minSeed').value, 10);
+  if (ms > 0) p.set('min_seeders', String(ms));
+  return p;
+}
+
+async function search() {
+  const keyword = $('q').value.trim();
+  if (!keyword) { $('q').focus(); return; }
+
+  if (aborter) aborter.abort();
+  aborter = new AbortController();
+
+  $('go').disabled = true;
+  showErr('');
+  $('results').innerHTML = '<div class="skeleton">Searching all sites...</div>';
+  $('status').innerHTML = '<span class="dot pulse"></span><span>Search started</span>';
+
+  const params = buildQuery();
+  const t0 = performance.now();
+  let siteCount = 0;
+  let preview = [];
+
+  try {
+    const res = await fetch('/api/search/stream?' + params.toString(), {
+      headers: authHeaders(),
+      signal: aborter.signal,
+    });
+    if (res.status === 401) {
+      showErr('Invalid token. Click Token and enter the access token printed at startup.');
+      $('results').innerHTML = '';
+      return;
+    }
+    if (!res.ok) {
+      showErr('Server returned HTTP ' + res.status);
+      $('results').innerHTML = '';
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const line = chunk.split('\n').find((l) => l.startsWith('data: '));
+        if (!line) continue;
+
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch (_) { continue; }
+
+        if (ev.type === 'site') {
+          siteCount++;
+          preview = preview.concat(ev.items || []);
+          $('status').innerHTML =
+            '<span class="dot pulse"></span><span>Sites returned: ' + siteCount + ' · ' +
+            Math.round(performance.now() - t0) + ' ms · Preview</span>';
+          renderTable(preview.slice(0, 40));
+        } else if (ev.type === 'error') {
+          showErr((ev.site_name || ev.site) + ': ' + ev.error);
+        } else if (ev.type === 'done') {
+          current = ev.items || [];
+          renderTable(current);
+          $('status').innerHTML =
+            '<span class="dot"></span><span>Results: ' + (ev.total || 0) + ' · ' +
+            (ev.elapsed_ms || Math.round(performance.now() - t0)) + ' ms · ' +
+            'Sites: ' + siteCount + '</span>';
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      showErr('Search interrupted: ' + e.message);
+    }
+  } finally {
+    $('go').disabled = false;
+  }
+}
+
+async function openDetail(id) {
+  try {
+    const r = await fetch('/api/torrent/' + encodeURIComponent(id), { headers: authHeaders() });
+    if (!r.ok) { toast('Could not load details. Search again'); return; }
+    const t = await r.json();
+
+    $('dTitle').textContent = t.title + (t.subtitle ? '\n' + t.subtitle : '');
+    const kv = $('dKv');
+    kv.innerHTML = '';
+    const add = (k, v) => {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v;
+      kv.append(dt, dd);
+    };
+    add('Site', t.site_name || t.site);
+    if (t.tags && t.tags.length) add('Tags', t.tags.join(' / '));
+    add('Size', fmtSize(t.size_bytes));
+    add('Seeders', t.seeders + ' / Leechers ' + t.leechers);
+    add('Promotion', promoLabel(t.promo));
+    if (t.resolution) add('Resolution', t.resolution);
+    if (t.publish_time) add('Published', String(t.publish_time).slice(0, 19).replace('T', ' '));
+    if (t.also_on && t.also_on.length) add('Other sources', t.also_on.join(', '));
+
+    const link = t.magnet || t.download_url || '';
+    const box = $('dLink');
+    box.textContent = link;
+    box.classList.toggle('hidden', !link);
+    box.dataset.link = link;
+    $('dDownload').dataset.id = t.id;
+    $('detail').showModal();
+  } catch (e) {
+    toast('Could not load details: ' + e.message);
+  }
+}
+
+$('dCopy').onclick = async () => {
+  const link = $('dLink').dataset.link || '';
+  if (!link) { toast('No link to copy'); return; }
+  try {
+    await navigator.clipboard.writeText(link);
+    toast('Copied');
+  } catch (_) {
+    toast('Clipboard access was denied');
+  }
+};
+
+$('dDownload').onclick = async (e) => {
+  const id = e.target.dataset.id;
+  const btn = e.target;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ id }),
+    });
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      toast('Sent to downloader');
+      $('detail').close();
+    } else {
+      toast(data.error || 'Submission failed');
+    }
+  } catch (err) {
+    toast('Submission failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$('dClose').onclick = () => $('detail').close();
+
+$('tokenBtn').onclick = () => {
+  const v = prompt('Enter the access token printed at startup:', token.get());
+  if (v === null) return;
+  token.set(v.trim());
+  toast(v.trim() ? 'Token saved' : 'Token cleared');
+  loadSites();
+};
+
+// ---------- Settings panel ----------
+// The server stores all settings in config.toml. Keep credentials out of the DOM.
+// Read responses report credential presence; blank input preserves stored secrets.
+let cfgSites = [];
+
+function textField(parent, label, value, onInput, opts = {}) {
+  const l = document.createElement('label');
+  if (opts.wide) l.className = 'wide';
+  l.appendChild(document.createTextNode(label));
+  const i = document.createElement('input');
+  i.type = opts.type || 'text';
+  i.value = value == null ? '' : value;
+  if (opts.placeholder) i.placeholder = opts.placeholder;
+  i.oninput = () => onInput(i.value);
+  l.appendChild(i);
+  parent.appendChild(l);
+}
+
+function selectField(parent, label, value, options, onChange) {
+  const l = document.createElement('label');
+  l.appendChild(document.createTextNode(label));
+  const s = document.createElement('select');
+  options.forEach(([v, t]) => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = t;
+    s.appendChild(o);
+  });
+  s.value = value;
+  s.onchange = () => onChange(s.value);
+  l.appendChild(s);
+  parent.appendChild(l);
+}
+
+function siteCard(s) {
+  const card = document.createElement('div');
+  card.className = 'sitecard';
+
+  const head = document.createElement('div');
+  head.className = 'chead';
+  const name = document.createElement('strong');
+  name.textContent = s.name || s.id || 'New site';
+  head.appendChild(name);
+  const spacer = document.createElement('span');
+  spacer.className = 'spacer';
+  head.appendChild(spacer);
+
+  const enLabel = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!s.enabled;
+  cb.onchange = () => { s.enabled = cb.checked; };
+  enLabel.append(cb, document.createTextNode('Enabled'));
+  head.appendChild(enLabel);
+
+  const del = document.createElement('button');
+  del.className = 'ghost';
+  del.textContent = 'Delete';
+  del.onclick = () => {
+    cfgSites = cfgSites.filter((x) => x !== s);
+    renderSites();
+  };
+  head.appendChild(del);
+  card.appendChild(head);
+
+  const grid = document.createElement('div');
+  grid.className = 'row';
+
+  textField(grid, 'Unique ID (lowercase letters, digits, - or _)', s.id, (v) => { s.id = v; }, { placeholder: 'mysite' });
+  textField(grid, 'Display name', s.name, (v) => { s.name = v; }, { placeholder: 'My tracker' });
+  selectField(grid, 'Type', s.type || 'nexusphp',
+    [['nexusphp', 'nexusphp (private tracker)'], ['mock', 'mock (demo data)']],
+    (v) => { s.type = v; });
+  textField(grid, 'Timeout (seconds)', s.timeout_seconds, (v) => { s.timeout_seconds = parseInt(v, 10) || 0; }, { type: 'number' });
+  textField(grid, 'Site URL', s.base_url, (v) => { s.base_url = v; }, { wide: true, placeholder: 'https://example.org' });
+  textField(grid, 'Search path', s.search_path, (v) => { s.search_path = v; }, { placeholder: '/torrents.php' });
+  textField(grid, 'User-Agent (optional)', s.user_agent, (v) => { s.user_agent = v; }, { placeholder: 'Default Chrome user agent' });
+  textField(grid, 'Cookie', s.cookie, (v) => { s.cookie = v; }, {
+    wide: true,
+    type: 'password',
+    placeholder: s.cookie_set
+      ? (s.cookie_hint || 'Saved') + '; leave blank to keep, or enter - to clear'
+      : 'Browser developer tools > Network > copy the complete Cookie header',
+  });
+
+  card.appendChild(grid);
+  return card;
+}
+
+function renderSites() {
+  const box = $('cfgSites');
+  box.innerHTML = '';
+  $('cfgSiteCount').textContent = cfgSites.length ? cfgSites.length + ' total' : '(empty)';
+  cfgSites.forEach((s) => box.appendChild(siteCard(s)));
+}
+
+function fillConfig(c) {
+  $('cfgPath').textContent = c.path || 'config.toml';
+  $('cfgAddr').value = c.server.addr || '';
+  $('cfgTTL').value = c.server.cache_ttl_seconds || 0;
+  $('cfgDataDir').value = c.server.data_dir || '';
+  $('cfgToken').value = c.server.token || '';
+
+  $('cfgDlType').value = c.downloader.type || '';
+  $('cfgDlUrl').value = c.downloader.url || '';
+  $('cfgDlUser').value = c.downloader.username || '';
+  $('cfgDlPath').value = c.downloader.save_path || '';
+  $('cfgDlPass').value = '';
+  $('cfgDlPass').placeholder = c.downloader.password_set ? 'Saved; leave blank to keep unchanged' : 'Not set';
+
+  // Keep cookie fields empty so saving preserves the stored value.
+  cfgSites = (c.sites || []).map((s) => ({ ...s, cookie: '' }));
+  renderSites();
+}
+
+async function openConfig() {
+  try {
+    const r = await fetch('/api/config', { headers: authHeaders() });
+    if (r.status === 401) { toast('Invalid token. Click Token to enter it'); return; }
+    if (!r.ok) { toast('Could not load configuration: HTTP ' + r.status); return; }
+    fillConfig(await r.json());
+    $('cfg').showModal();
+  } catch (e) {
+    toast('Could not load configuration: ' + e.message);
+  }
+}
+
+async function saveConfig() {
+  const payload = {
+    server: {
+      addr: $('cfgAddr').value.trim(),
+      data_dir: $('cfgDataDir').value.trim(),
+      cache_ttl_seconds: parseInt($('cfgTTL').value, 10) || 0,
+    },
+    downloader: {
+      type: $('cfgDlType').value,
+      url: $('cfgDlUrl').value.trim(),
+      username: $('cfgDlUser').value.trim(),
+      password: $('cfgDlPass').value,
+      save_path: $('cfgDlPath').value.trim(),
+    },
+    sites: cfgSites.map((s) => ({
+      id: (s.id || '').trim(),
+      name: (s.name || '').trim(),
+      type: s.type || 'nexusphp',
+      enabled: !!s.enabled,
+      base_url: (s.base_url || '').trim(),
+      search_path: (s.search_path || '').trim(),
+      cookie: s.cookie || '',
+      user_agent: (s.user_agent || '').trim(),
+      timeout_seconds: s.timeout_seconds || 0,
+    })),
+  };
+
+  const btn = $('cfgSave');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(data.error || 'Save failed'); return; }
+    fillConfig(data.config);
+    loadSites();
+    toast(data.restart_required ? 'Saved. Restart to apply the new listen address' : 'Saved and applied');
+  } catch (e) {
+    toast('Save failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('cfgBtn').onclick = openConfig;
+$('cfgCancel').onclick = () => $('cfg').close();
+$('cfgSave').onclick = saveConfig;
+$('cfgAddSite').onclick = () => {
+  cfgSites.push({
+    id: '', name: '', type: 'nexusphp', enabled: true,
+    base_url: '', search_path: '/torrents.php',
+    cookie: '', user_agent: '', timeout_seconds: 20,
+  });
+  renderSites();
+};
+$('cfgRotate').onclick = async () => {
+  if (!confirm('The old token will stop working immediately. Update your Claude Code and Codex clients afterward. Continue?')) return;
+  try {
+    const r = await fetch('/api/config/token', { method: 'POST', headers: authHeaders() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(data.error || 'Token rotation failed'); return; }
+    token.set(data.token);
+    $('cfgToken').value = data.token;
+    toast('Token rotated. Update your client configuration');
+  } catch (e) {
+    toast('Token rotation failed: ' + e.message);
+  }
+};
+
+$('go').onclick = search;
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+['free', 'res', 'minSeed'].forEach((id) => $(id).addEventListener('change', () => {
+  if ($('q').value.trim() && current.length) search();
+}));
+
+// Search bookmarks can include /?q=Inception&t=<token>.
+// Remove the token from the address bar after storing it locally.
+const boot = new URLSearchParams(location.search);
+if (boot.get('t')) {
+  token.set(boot.get('t').trim());
+  history.replaceState({}, '', location.pathname + location.hash);
+}
+
+loadSites();
+
+// The #settings fragment opens the settings panel directly.
+if (location.hash === '#settings') openConfig();
+
+if (boot.get('q')) {
+  $('q').value = boot.get('q');
+  search();
+}
+</script>
+</body>
+</html>
