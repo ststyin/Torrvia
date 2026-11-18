@@ -1,9 +1,10 @@
-// Package qb is a minimal qBittorrent WebUI client for submitting magnet links and torrent files. Task management remains in the downloader.
+// Package qb reads qBittorrent tasks and submits magnet links and torrent files.
 package qb
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 )
+
+var errSessionExpired = errors.New("Downloader session expired")
 
 // Client maintains a qBittorrent session.
 type Client struct {
@@ -133,13 +136,13 @@ func (c *Client) withSession(ctx context.Context, fn func() error) error {
 		}
 	}
 	err := fn()
-	if err == nil {
-		return nil
+	if !errors.Is(err, errSessionExpired) {
+		return err
 	}
 	// The session may have expired; authenticate and retry once.
 	c.sid = ""
 	if lerr := c.login(ctx); lerr != nil {
-		return err
+		return lerr
 	}
 	return fn()
 }
@@ -189,17 +192,37 @@ func (c *Client) postFile(ctx context.Context, data []byte, filename, savePath s
 }
 
 func (c *Client) do(req *http.Request) error {
+	resp, err := c.request(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return fmt.Errorf("Failed to read downloader response: %w", err)
+	}
+	// qBittorrent may reject a task with HTTP 200 and a Fails. response.
+	if strings.Contains(strings.ToLower(string(body)), "fail") {
+		return fmt.Errorf("Downloader rejected the task: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (c *Client) request(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Referer", c.base)
 	req.AddCookie(&http.Cookie{Name: "SID", Value: c.sid})
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("Failed to submit download: %w", err)
+		return nil, fmt.Errorf("Failed to connect to downloader: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+			return nil, errSessionExpired
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		// Include a short response body because qBittorrent reports routing and parameter errors as plain text.
 		snippet := strings.TrimSpace(string(body))
 		if r := []rune(snippet); len(r) > 120 {
@@ -208,11 +231,7 @@ func (c *Client) do(req *http.Request) error {
 		if snippet == "" {
 			snippet = http.StatusText(resp.StatusCode)
 		}
-		return fmt.Errorf("Downloader returned HTTP %d: %s", resp.StatusCode, snippet)
+		return nil, fmt.Errorf("Downloader returned HTTP %d: %s", resp.StatusCode, snippet)
 	}
-	// qBittorrent may reject a task with HTTP 200 and a Fails. response.
-	if strings.Contains(strings.ToLower(string(body)), "fail") {
-		return fmt.Errorf("Downloader rejected the task: %s", strings.TrimSpace(string(body)))
-	}
-	return nil
+	return resp, nil
 }

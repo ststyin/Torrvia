@@ -620,7 +620,7 @@ $('dDownload').onclick = async (e) => {
     });
     const data = await r.json();
     if (r.ok && data.ok) {
-      toast('Sent to downloader');
+      toast(data.already_exists ? 'Already in downloader: ' + data.existing.state + ' · ' + Math.round(data.existing.progress * 100) + '%' : 'Sent to downloader');
       $('detail').close();
     } else {
       toast(data.error || 'Submission failed');

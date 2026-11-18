@@ -9,6 +9,7 @@ Find what you want to watch.
 - 并发搜索多个 PT 站点，跨站去重，按做种数与促销权重排序。
 - 提供 Web 界面、REST API 和 MCP，支持流式搜索。
 - 站点和下载器共用一份 `config.toml`，可在网页设置中修改。
+- 查询 qBittorrent 的当前任务和下载进度，提交前检查已有资源。
 - 单个 Go 二进制，自托管运行。
 
 ## 本地运行
@@ -62,9 +63,26 @@ url = "http://localhost:8080/mcp"
 http_headers = { Authorization = "Bearer <访问令牌>" }
 ```
 
-MCP 提供 `search_torrents`、`get_torrent`、`list_sites` 和 `download_torrent` 四个工具。
+MCP 提供 `search_torrents`、`get_torrent`、`list_sites`、`list_downloads` 和 `download_torrent` 五个工具。
 片名识别、译名转换和资源取舍由调用方 AI 完成。
 配套检索技能见 [skills/torrvia/SKILL.md](skills/torrvia/SKILL.md)。
+
+## 下载状态和查重
+
+`list_downloads` 读取 qBittorrent 的当前任务，包括仍保留在下载器中的已完成任务。返回任务哈希、名称、原始状态、0～1 的进度、字节数、下载和上传速度（字节/秒）、预计剩余秒数及保存路径。可选参数：
+
+- `query`：按任务名搜索，忽略大小写和发布名中的标点；应使用原始发布名，不自动转换中文别名。
+- `filter`：`all`（默认）、`downloading`、`completed`、`active`、`inactive`、`stalled` 或 `errored`。
+- `hash`：使用下载器的任务哈希查询单个任务，与 PT 站点资源 ID 不同。
+- `limit` / `offset`：按添加时间从新到旧分页；默认每页 20 条，最多 100 条。返回 `total` 和 `has_more`。
+
+对应的 REST 接口为 `GET /api/downloads?q=Fights+Break+Sphere&filter=completed&limit=20&offset=0`，沿用现有访问令牌认证。
+
+`download_torrent` 和 `POST /api/download` 提交前会检查全部当前任务，按磁力链接中的信息哈希，或规范化后的发布名与体积（相差不超过 8%）匹配。已有任务时返回 `ok: true`、`already_exists: true`、匹配方式 `match` 及任务状态 `existing`，跳过提交。名称和体积匹配属于启发式判断；如果任务已改名且没有已知磁力哈希，可能无法识别。查询失败会报错并停止提交。
+
+查询范围是仍保留在 qBittorrent 的任务，不是永久下载历史或本地媒体目录扫描。已从下载器删除的任务不会出现。进度针对选中的文件；即使达到 100%，也应检查是否存在错误或文件丢失。新任务提交成功只代表下载器已接收，不代表下载完成。
+
+升级服务后需重启，并刷新或重新连接 MCP 客户端，才能发现新工具。
 
 ## 开发
 

@@ -1,6 +1,6 @@
 ---
 name: torrvia
-description: Find, compare, and download media across private trackers using the local Torrvia service. Use when the user asks to find media, check which tracker has a release, compare resolutions or versions, or send a selected resource to the downloader. Uses search_torrents, get_torrent, list_sites, and download_torrent.
+description: Find, compare, and download media across private trackers using Torrvia; inspect qBittorrent tasks, completed downloads, and progress. Use for media searches, release comparisons, download submissions, and questions about existing downloads.
 ---
 
 # Torrvia media search
@@ -15,6 +15,18 @@ Turn the user's request into targeted searches and a short list of releases they
 4. Narrow large result sets with filters.
 5. Present 3-5 candidates and explain the recommendation.
 6. Call `download_torrent` when the user explicitly requests a download.
+
+## Existing downloads and progress
+
+Use the read-only `list_downloads` tool when the user asks what they have downloaded, whether a release already exists, or how a download is progressing. Search `query` using the original release name; the downloader does not translate localized aliases. For example, search `Fights Break Sphere` for releases found under 《斗破苍穹》. Leave `query` empty to browse all tasks.
+
+- Use `filter: "completed"` for completed tasks, or `filter: "downloading"` for downloads in progress. The default `all` includes stopped and errored tasks.
+- Use a returned `hash` to check a particular task. Tracker resource IDs belong to `get_torrent` and `download_torrent`, not this lookup.
+- Results are newest first. Follow `has_more` with `offset` and `limit` when a complete inventory is needed; `total` counts matches before pagination.
+- `progress` ranges from 0 to 1 and describes selected files. Read `state` alongside it: `missingFiles` or `error` needs attention even at 100%. `completed` is a byte count. Speeds are bytes/s; `eta: 8640000` means unknown.
+- Report downloader failures as unavailable status. An empty list covers only current tasks: removed tasks and files outside qBittorrent are not included.
+
+`download_torrent` checks existing tasks before submission. When `already_exists` is true, report the returned `existing` task's progress and state and say that submission was skipped. `match: "hash"` uses a known magnet hash; `name_and_size` is a heuristic based on the normalized release name and an 8% size tolerance. Renamed tasks without a known hash can be missed. A successful new submission confirms acceptance, not completion.
 
 ## Search keywords
 

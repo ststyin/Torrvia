@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -64,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search/stream", s.searchStream)
 	mux.HandleFunc("GET /api/torrent/{id}", s.torrent)
 	mux.HandleFunc("POST /api/download", s.download)
+	mux.HandleFunc("GET /api/downloads", s.downloads)
 	mux.HandleFunc("GET /api/history", s.history)
 	mux.HandleFunc("GET /api/config", s.getConfig)
 	mux.HandleFunc("PUT /api/config", s.putConfig)
@@ -298,6 +300,17 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
+	existing, match, err := client.FindExisting(ctx, t)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if existing != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "title": t.Title, "already_exists": true, "match": match, "existing": existing,
+		})
+		return
+	}
 
 	// Fetch torrent files with the site's credentials before falling back to a magnet link.
 	if a, ok := s.svc.Adapter(t.Site); ok {
@@ -326,6 +339,38 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{
 		"error": "This resource has no usable torrent file or magnet link",
 	})
+}
+
+func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
+	client := s.qb()
+	if client == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Downloader not configured"})
+		return
+	}
+	q := r.URL.Query()
+	opts := qb.ListOptions{Query: q.Get("q"), Filter: q.Get("filter"), Hash: q.Get("hash")}
+	for key, dest := range map[string]*int{"limit": &opts.Limit, "offset": &opts.Offset} {
+		if q.Has(key) {
+			n, err := strconv.Atoi(q.Get(key))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": key + " must be an integer"})
+				return
+			}
+			*dest = n
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	out, err := client.List(ctx, opts)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, qb.ErrInvalidOptions) {
+			code = http.StatusBadRequest
+		}
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
