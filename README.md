@@ -33,15 +33,17 @@ You can also select the configuration file with `TORRVIA_CONFIG`. The file conta
 
 ## Docker
 
-Generate the configuration on the host before starting the container:
+Create the private configuration directory before running Compose. For an existing installation, stop the old container and copy its host configuration once. The commands preserve an existing destination configuration and the `./data` directory.
 
 ```sh
-make build
-./torrvia -check
+docker compose stop torrvia
+mkdir -p -m 700 config
+if [ -f config.toml ]; then cp -np config.toml config/config.toml; fi
 docker compose up -d --build
+docker compose exec torrvia /torrvia -token
 ```
 
-The configuration and data directory are mounted at `/config/config.toml` and `/data`. Set `TORRVIA_PORT` to change the host port or `TORRVIA_VERSION` to change the build version.
+On a fresh installation Torrvia creates `./config/config.toml` on startup. Compose mounts `./config/` at `/config` so Web settings can save atomically, and mounts `./data` at `/data`. Set `TORRVIA_PORT` to change the host port or `TORRVIA_VERSION` to change the build version.
 
 ## MCP setup
 

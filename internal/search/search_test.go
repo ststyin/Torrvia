@@ -1,34 +1,82 @@
 package search
 
 import (
-	"sync"
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/ststyin/torrvia/internal/adapter"
+	"github.com/ststyin/torrvia/internal/config"
 	"github.com/ststyin/torrvia/internal/model"
 )
 
-func TestCacheConcurrentReset(t *testing.T) {
-	c := newResultCache(time.Minute)
-	q := model.Query{Keyword: "Inception"}
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for _, operation := range []func(){
-		func() { c.get(q) },
-		func() { c.put(q, nil) },
-		func() { c.reset(time.Minute) },
-	} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			for i := 0; i < 1000; i++ {
-				operation()
-			}
-		}()
+type scriptedSite struct {
+	adapter.Adapter
+	lookup func() ([]model.Torrent, error)
+}
+
+func (a scriptedSite) Search(context.Context, model.Query) ([]model.Torrent, error) {
+	return a.lookup()
+}
+
+func demoSite(t *testing.T) adapter.Adapter {
+	t.Helper()
+	a, err := adapter.Build(config.Site{ID: "demo", Type: "mock"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	close(start)
-	wg.Wait()
+	return a
+}
+
+func TestReplaceAdaptersDuringSearch(t *testing.T) {
+	a := demoSite(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	old := &scriptedSite{a, func() ([]model.Torrent, error) {
+		close(started)
+		<-release
+		return []model.Torrent{{ID: "demo:old", Site: "demo", Title: "Old"}}, nil
+	}}
+	fresh := &scriptedSite{a, func() ([]model.Torrent, error) {
+		return []model.Torrent{{ID: "demo:new", Site: "demo", Title: "New"}}, nil
+	}}
+	s := New([]adapter.Adapter{old}, time.Hour)
+	q := model.Query{Keyword: "film"}
+	events := s.Stream(context.Background(), q)
+	<-started
+	s.ReplaceAdapters([]adapter.Adapter{fresh}, time.Hour)
+	close(release)
+	for range events {
+	}
+	if _, _, ok := s.Resource("demo:old"); ok || len(s.Status()) != 0 {
+		t.Fatal("previous configuration leaked into new catalog")
+	}
+	items, errs := s.Search(context.Background(), q)
+	if len(errs) != 0 || len(items) != 1 || items[0].ID != "demo:new" {
+		t.Fatalf("stale search: %v %v", items, errs)
+	}
+	if _, a, ok := s.Resource("demo:new"); !ok || a != fresh {
+		t.Fatal("resource lost its adapter")
+	}
+}
+
+func TestFailedSearchIsRetried(t *testing.T) {
+	calls := 0
+	a := &scriptedSite{demoSite(t), func() ([]model.Torrent, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("tracker unavailable")
+		}
+		return []model.Torrent{{ID: "demo:1", Site: "demo", Title: "Recovered"}}, nil
+	}}
+	s := New([]adapter.Adapter{a}, time.Hour)
+	q := model.Query{Keyword: "film"}
+	if _, errs := s.Search(context.Background(), q); errs["demo"] == "" {
+		t.Fatal("missing tracker error")
+	}
+	if items, errs := s.Search(context.Background(), q); len(errs) > 0 || len(items) != 1 {
+		t.Fatalf("failed result cached: %v %v", items, errs)
+	}
 }
 
 func torrent(site, title string, seeders int, promo model.Promo, gb float64) model.Torrent {

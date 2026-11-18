@@ -4,6 +4,7 @@ package model
 import (
 	"fmt"
 	"math"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -127,19 +128,28 @@ func DetectResolution(title string) string {
 	return ""
 }
 
-var nonWordRe = regexp.MustCompile(`[^\p{Han}a-z0-9]+`)
+var nonWordRe = regexp.MustCompile(`[^\p{L}\p{M}\p{N}]+`)
 
 // NormalizeTitle creates a deterministic fingerprint without semantic title inference.
 func NormalizeTitle(s string) string {
 	s = strings.ToLower(s)
 	s = strings.ReplaceAll(s, "&amp;", "and")
-	s = nonWordRe.ReplaceAllString(s, "")
-	return s
+	return nonWordRe.ReplaceAllString(s, "")
+}
+
+func releaseFingerprint(title string) string {
+	title = strings.TrimSpace(title)
+	ext := path.Ext(title)
+	switch strings.ToLower(ext) {
+	case ".mkv", ".mp4", ".avi", ".ts":
+		title = strings.TrimSuffix(title, ext)
+	}
+	return NormalizeTitle(title)
 }
 
 // SameResource compares title fingerprints and allows an 8% size difference for cross-site copies.
 func (t *Torrent) SameResource(o *Torrent) bool {
-	if NormalizeTitle(t.Title) != NormalizeTitle(o.Title) {
+	if title := releaseFingerprint(t.Title); title == "" || title != releaseFingerprint(o.Title) {
 		return false
 	}
 	if t.SizeBytes <= 0 || o.SizeBytes <= 0 {

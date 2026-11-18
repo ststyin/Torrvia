@@ -23,7 +23,7 @@ func TestRenderParseRoundTrip(t *testing.T) {
 			Type:     "qbittorrent",
 			URL:      "http://10.0.0.2:8080",
 			Username: "admin",
-			Password: "p@ss\"word\\with\\quotes",
+			Password: "p@ss\"word\\with\\quotes\x07",
 			SavePath: "/downloads",
 		},
 		Sites: []Site{
@@ -38,7 +38,7 @@ func TestRenderParseRoundTrip(t *testing.T) {
 				UserAgent:  "Mozilla/5.0 (Macintosh)",
 				TimeoutSec: 25,
 			},
-			{ID: "demo", Name: "Demo tracker", Type: "mock", Enabled: false, TimeoutSec: 20},
+			{ID: "demo", Name: "Demo tracker", Type: "mock", Enabled: false, SearchPath: "/custom", TimeoutSec: 20},
 		},
 	}
 	if err := want.Save(path); err != nil {

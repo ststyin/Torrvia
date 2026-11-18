@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/ststyin/torrvia/internal/adapter"
 	"github.com/ststyin/torrvia/internal/config"
+	"github.com/ststyin/torrvia/internal/download"
 	"github.com/ststyin/torrvia/internal/model"
 	"github.com/ststyin/torrvia/internal/qb"
 	"github.com/ststyin/torrvia/internal/search"
@@ -21,36 +22,39 @@ import (
 
 // Server holds HTTP dependencies. Configuration and downloader accessors always read the current runtime state.
 type Server struct {
-	cfg   func() *config.Config
-	svc   *search.Service
-	hist  *store.History
-	qb    func() *qb.Client
-	web   fs.FS
-	mcp   http.Handler
-	apply func(*config.Config) error
+	initialServer config.ServerConfig
+	configMu      sync.Mutex
+	downloadsSvc  *download.Service
+	cfg           func() *config.Config
+	svc           *search.Service
+	hist          *store.History
+	web           fs.FS
+	mcp           http.Handler
+	apply         func(*config.Config) error
 }
 
 // Deps contains the HTTP server dependencies.
 type Deps struct {
-	Cfg   func() *config.Config
-	Svc   *search.Service
-	Hist  *store.History
-	QB    func() *qb.Client
-	Web   fs.FS
-	MCP   http.Handler
-	Apply func(*config.Config) error
+	Downloads *download.Service
+	Cfg       func() *config.Config
+	Svc       *search.Service
+	Hist      *store.History
+	Web       fs.FS
+	MCP       http.Handler
+	Apply     func(*config.Config) error
 }
 
 // New constructs the HTTP server.
 func New(d Deps) *Server {
 	return &Server{
-		cfg:   d.Cfg,
-		svc:   d.Svc,
-		hist:  d.Hist,
-		qb:    d.QB,
-		web:   d.Web,
-		mcp:   d.MCP,
-		apply: d.Apply,
+		initialServer: d.Cfg().Server,
+		downloadsSvc:  d.Downloads,
+		cfg:           d.Cfg,
+		svc:           d.Svc,
+		hist:          d.Hist,
+		web:           d.Web,
+		mcp:           d.MCP,
+		apply:         d.Apply,
 	}
 }
 
@@ -127,7 +131,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"sites":      len(s.svc.Adapters()),
-		"downloader": s.qb() != nil,
+		"downloader": s.downloadsSvc.Configured(),
 		"version":    version,
 	})
 }
@@ -274,8 +278,7 @@ type downloadRequest struct {
 }
 
 func (s *Server) download(w http.ResponseWriter, r *http.Request) {
-	client := s.qb()
-	if client == nil {
+	if !s.downloadsSvc.Configured() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "Downloader not configured. Set the qBittorrent URL and credentials in Settings",
 		})
@@ -287,66 +290,24 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
 		return
 	}
-	t, ok := s.svc.Get(req.ID)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Resource not found. Search again"})
-		return
-	}
-
-	savePath := req.SavePath
-	if savePath == "" {
-		savePath = s.cfg().Downloader.SavePath
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-	existing, match, err := client.FindExisting(ctx, t)
+	out, err := s.downloadsSvc.Submit(r.Context(), req.ID, req.SavePath)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	if existing != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true, "title": t.Title, "already_exists": true, "match": match, "existing": existing,
-		})
-		return
-	}
-
-	// Fetch torrent files with the site's credentials before falling back to a magnet link.
-	if a, ok := s.svc.Adapter(t.Site); ok {
-		if f, ok := a.(adapter.TorrentFetcher); ok && t.DownloadURL != "" {
-			data, name, err := f.FetchTorrent(ctx, t)
-			if err == nil && len(data) > 0 {
-				if err := client.AddFile(ctx, data, name, savePath); err != nil {
-					writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "torrent_file", "title": t.Title})
-				return
-			}
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, download.ErrNotConfigured):
+			status = http.StatusServiceUnavailable
+		case errors.Is(err, download.ErrNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, download.ErrNoSource):
+			status = http.StatusBadRequest
 		}
-	}
-
-	if t.Magnet != "" {
-		if err := client.AddLink(ctx, t.Magnet, savePath); err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "magnet", "title": t.Title})
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-
-	writeJSON(w, http.StatusBadRequest, map[string]string{
-		"error": "This resource has no usable torrent file or magnet link",
-	})
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
-	client := s.qb()
-	if client == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Downloader not configured"})
-		return
-	}
 	q := r.URL.Query()
 	opts := qb.ListOptions{Query: q.Get("q"), Filter: q.Get("filter"), Hash: q.Get("hash")}
 	for key, dest := range map[string]*int{"limit": &opts.Limit, "offset": &opts.Offset} {
@@ -359,12 +320,12 @@ func (s *Server) downloads(w http.ResponseWriter, r *http.Request) {
 			*dest = n
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	out, err := client.List(ctx, opts)
+	out, err := s.downloadsSvc.List(r.Context(), opts)
 	if err != nil {
 		code := http.StatusBadGateway
-		if errors.Is(err, qb.ErrInvalidOptions) {
+		if errors.Is(err, download.ErrNotConfigured) {
+			code = http.StatusServiceUnavailable
+		} else if errors.Is(err, qb.ErrInvalidOptions) {
 			code = http.StatusBadRequest
 		}
 		writeJSON(w, code, map[string]string{"error": err.Error()})

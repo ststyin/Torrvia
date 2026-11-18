@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 )
@@ -44,13 +45,7 @@ func (h *History) Append(r Record) error {
 	}
 	defer f.Close()
 
-	b, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	_, err = f.Write(b)
-	return err
+	return json.NewEncoder(f).Encode(r)
 }
 
 // Recent returns the most recent n records, newest first.
@@ -68,6 +63,7 @@ func (h *History) Recent(n int) ([]Record, error) {
 	defer f.Close()
 
 	var all []Record
+	next := 0
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -75,17 +71,19 @@ func (h *History) Recent(n int) ([]Record, error) {
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			continue
 		}
-		all = append(all, r)
+		if n > 0 && len(all) == n {
+			all[next] = r
+			next = (next + 1) % n
+		} else {
+			all = append(all, r)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if n > 0 && len(all) > n {
-		all = all[len(all)-n:]
-	}
-	// Reverse to newest-first order.
-	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
-		all[i], all[j] = all[j], all[i]
-	}
+	// The ring's two segments each run oldest first. Reverse them separately
+	// so the last inserted entry leads the output.
+	slices.Reverse(all[:next])
+	slices.Reverse(all[next:])
 	return all, nil
 }

@@ -35,16 +35,17 @@ make build
 
 ## Docker
 
-先在宿主机启动一次程序生成配置，再运行容器：
+先创建配置目录。升级旧版时，先停止旧容器，再将宿主机上的配置复制到新目录。以下命令会保留目标目录已有的配置和原有的 `./data` 数据。
 
 ```sh
-make build
-./torrvia -check
+docker compose stop torrvia
+mkdir -p -m 700 config
+if [ -f config.toml ]; then cp -np config.toml config/config.toml; fi
 docker compose up -d --build
+docker compose exec torrvia /torrvia -token
 ```
 
-配置文件和数据目录分别挂载到 `/config/config.toml` 和 `/data`。
-用 `TORRVIA_PORT` 设置宿主机端口，用 `TORRVIA_VERSION` 设置构建版本。
+首次安装时，Torrvia 会在启动时生成 `./config/config.toml`。Compose 将整个 `./config/` 挂载到 `/config`，以便网页设置可以原子替换配置文件。数据目录 `./data` 挂载到 `/data`。用 `TORRVIA_PORT` 设置宿主机端口，用 `TORRVIA_VERSION` 设置构建版本。
 
 ## MCP 接入
 

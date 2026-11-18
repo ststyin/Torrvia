@@ -4,8 +4,10 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ststyin/torrvia/internal/adapter"
@@ -32,63 +34,48 @@ type SiteState struct {
 
 // Service aggregates site searches.
 type Service struct {
-	mu       sync.RWMutex
-	adapters map[string]adapter.Adapter
-	order    []string
-	state    map[string]SiteState
-	seen     map[string]model.Torrent
-	cache    *resultCache
+	current atomic.Pointer[catalog]
 }
 
-// New preserves configured site order without affecting final rankings.
+// A search keeps its site's credentials, results, cache, and health state together
+// even if a settings update installs a new catalog while a site is responding.
+type catalog struct {
+	sites []adapter.Adapter
+	byID  map[string]adapter.Adapter
+	mu    sync.RWMutex
+	state map[string]SiteState
+	seen  map[string]model.Torrent
+	cache *resultCache
+}
+
 func New(adapters []adapter.Adapter, cacheTTL time.Duration) *Service {
-	s := &Service{
-		adapters: make(map[string]adapter.Adapter, len(adapters)),
-		order:    make([]string, 0, len(adapters)),
-		state:    make(map[string]SiteState, len(adapters)),
-		seen:     make(map[string]model.Torrent, 1024),
-		cache:    newResultCache(cacheTTL),
-	}
-	for _, a := range adapters {
-		s.adapters[a.ID()] = a
-		s.order = append(s.order, a.ID())
-	}
+	s := new(Service)
+	s.ReplaceAdapters(adapters, cacheTTL)
 	return s
 }
 
-// ReplaceAdapters updates sites and clears cached results and health states after a configuration change.
 func (s *Service) ReplaceAdapters(adapters []adapter.Adapter, cacheTTL time.Duration) {
-	m := make(map[string]adapter.Adapter, len(adapters))
-	order := make([]string, 0, len(adapters))
-	for _, a := range adapters {
-		m[a.ID()] = a
-		order = append(order, a.ID())
+	c := &catalog{
+		sites: slices.Clone(adapters),
+		byID:  make(map[string]adapter.Adapter, len(adapters)),
+		state: make(map[string]SiteState),
+		seen:  make(map[string]model.Torrent),
+		cache: newResultCache(cacheTTL),
 	}
-
-	s.mu.Lock()
-	s.adapters = m
-	s.order = order
-	s.state = make(map[string]SiteState, len(adapters))
-	s.mu.Unlock()
-
-	s.cache.reset(cacheTTL)
+	for _, a := range adapters {
+		c.byID[a.ID()] = a
+	}
+	s.current.Store(c)
 }
 
 // Adapters returns enabled adapters in configuration order.
 func (s *Service) Adapters() []adapter.Adapter {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]adapter.Adapter, 0, len(s.order))
-	for _, id := range s.order {
-		if a, ok := s.adapters[id]; ok {
-			out = append(out, a)
-		}
-	}
-	return out
+	return slices.Clone(s.current.Load().sites)
 }
 
 // Status returns a snapshot of site health states.
-func (s *Service) Status() map[string]SiteState {
+func (svc *Service) Status() map[string]SiteState {
+	s := svc.current.Load()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string]SiteState, len(s.state))
@@ -98,7 +85,7 @@ func (s *Service) Status() map[string]SiteState {
 	return out
 }
 
-func (s *Service) markState(id string, err error) {
+func (s *catalog) markState(id string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
@@ -109,7 +96,7 @@ func (s *Service) markState(id string, err error) {
 }
 
 // remember keeps a bounded set of resources for subsequent detail and download requests.
-func (s *Service) remember(items []model.Torrent) {
+func (s *catalog) remember(items []model.Torrent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.seen) > 4096 {
@@ -122,23 +109,23 @@ func (s *Service) remember(items []model.Torrent) {
 
 // Get looks up a resource from a recent search.
 func (s *Service) Get(id string) (model.Torrent, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	t, ok := s.seen[id]
+	t, _, ok := s.Resource(id)
 	return t, ok
 }
 
-// Adapter looks up a site adapter by ID.
-func (s *Service) Adapter(siteID string) (adapter.Adapter, bool) {
+// Resource resolves a tracker result and its adapter from the same configuration.
+func (svc *Service) Resource(id string) (model.Torrent, adapter.Adapter, bool) {
+	s := svc.current.Load()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	a, ok := s.adapters[siteID]
-	return a, ok
+	t, ok := s.seen[id]
+	a := s.byID[t.Site]
+	return t, a, ok && a != nil
 }
 
 // targets selects the sites included in this query.
-func (s *Service) targets(q model.Query) []adapter.Adapter {
-	all := s.Adapters()
+func (s *catalog) targets(q model.Query) []adapter.Adapter {
+	all := s.sites
 	if len(q.Sites) == 0 {
 		return all
 	}
@@ -163,18 +150,22 @@ type siteResult struct {
 }
 
 // Stream searches concurrently and closes the channel after all sites return.
-func (s *Service) Stream(ctx context.Context, q model.Query) <-chan Event {
-	out := make(chan Event, 16)
+func (svc *Service) Stream(ctx context.Context, q model.Query) <-chan Event {
+	s := svc.current.Load()
+	targets := s.targets(q)
+	// Each site emits one event, followed by the final ranking. A disconnected
+	// consumer must not leave the aggregator waiting to send.
+	out := make(chan Event, len(targets)+1)
 	go func() {
 		defer close(out)
 
 		if hit, ok := s.cache.get(q); ok {
 			limited := applyLimit(hit, q.Limit)
+			s.remember(limited)
 			out <- Event{Type: "done", Items: limited, Total: len(limited)}
 			return
 		}
 
-		targets := s.targets(q)
 		if len(targets) == 0 {
 			out <- Event{Type: "error", Error: "No sites available; check the configuration"}
 			return
@@ -197,8 +188,10 @@ func (s *Service) Stream(ctx context.Context, q model.Query) <-chan Event {
 		go func() { wg.Wait(); close(results) }()
 
 		var all []model.Torrent
+		complete := true
 		for r := range results {
 			if r.err != nil {
+				complete = false
 				out <- Event{
 					Type:     "error",
 					Site:     r.adapter.ID(),
@@ -222,8 +215,11 @@ func (s *Service) Stream(ctx context.Context, q model.Query) <-chan Event {
 
 		ranked := Rank(all, q)
 		// Cache the complete ranking; apply each request's limit only at the output boundary.
-		s.cache.put(q, ranked)
+		if complete {
+			s.cache.put(q, ranked)
+		}
 		limited := applyLimit(ranked, q.Limit)
+		s.remember(limited)
 		out <- Event{
 			Type:      "done",
 			Items:     limited,
@@ -240,9 +236,11 @@ func (s *Service) Search(ctx context.Context, q model.Query) ([]model.Torrent, m
 	for ev := range s.Stream(ctx, q) {
 		switch ev.Type {
 		case "error":
-			if ev.Site != "" {
-				errs[ev.Site] = ev.Error
+			key := ev.Site
+			if key == "" {
+				key = "server"
 			}
+			errs[key] = ev.Error
 		case "done":
 			return ev.Items, errs
 		}
@@ -304,9 +302,10 @@ func sortItems(items []model.Torrent) {
 }
 
 // HealthCheck checks all sites concurrently.
-func (s *Service) HealthCheck(ctx context.Context) {
+func (svc *Service) HealthCheck(ctx context.Context) {
+	s := svc.current.Load()
 	var wg sync.WaitGroup
-	for _, a := range s.Adapters() {
+	for _, a := range s.sites {
 		wg.Add(1)
 		go func(a adapter.Adapter) {
 			defer wg.Done()
@@ -332,14 +331,6 @@ type resultCache struct {
 
 func newResultCache(ttl time.Duration) *resultCache {
 	return &resultCache{ttl: ttl, m: make(map[string]cacheEntry)}
-}
-
-// reset clears cached results and updates the TTL after configuration changes.
-func (c *resultCache) reset(ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ttl = ttl
-	c.m = make(map[string]cacheEntry)
 }
 
 func cacheKey(q model.Query) string {

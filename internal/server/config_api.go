@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,71 +11,36 @@ import (
 
 // Configuration endpoints return credential presence and length, never cookie or password values. Empty input preserves a secret; a single hyphen clears it.
 
-type serverView struct {
-	Addr            string `json:"addr"`
-	Token           string `json:"token"`
-	DataDir         string `json:"data_dir"`
-	CacheTTLSeconds int    `json:"cache_ttl_seconds"`
-}
-
 type downloaderView struct {
-	Type        string `json:"type"`
-	URL         string `json:"url"`
-	Username    string `json:"username"`
-	PasswordSet bool   `json:"password_set"`
-	SavePath    string `json:"save_path"`
+	config.DownloaderConfig
+	PasswordSet bool `json:"password_set"`
 }
 
 type siteView struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Enabled    bool   `json:"enabled"`
-	BaseURL    string `json:"base_url"`
-	SearchPath string `json:"search_path"`
+	config.Site
 	CookieSet  bool   `json:"cookie_set"`
 	CookieHint string `json:"cookie_hint"`
-	UserAgent  string `json:"user_agent"`
-	TimeoutSec int    `json:"timeout_seconds"`
 }
 
 type configView struct {
-	Path       string         `json:"path"`
-	Server     serverView     `json:"server"`
-	Downloader downloaderView `json:"downloader"`
-	Sites      []siteView     `json:"sites"`
+	Path       string              `json:"path"`
+	Server     config.ServerConfig `json:"server"`
+	Downloader downloaderView      `json:"downloader"`
+	Sites      []siteView          `json:"sites"`
 }
 
 func newConfigView(c *config.Config) configView {
 	v := configView{
-		Path: c.Path(),
-		Server: serverView{
-			Addr:            c.Server.Addr,
-			Token:           c.Server.Token,
-			DataDir:         c.Server.DataDir,
-			CacheTTLSeconds: c.Server.CacheTTLSeconds,
-		},
-		Downloader: downloaderView{
-			Type:        c.Downloader.Type,
-			URL:         c.Downloader.URL,
-			Username:    c.Downloader.Username,
-			PasswordSet: c.Downloader.Password != "",
-			SavePath:    c.Downloader.SavePath,
-		},
-		Sites: make([]siteView, 0, len(c.Sites)),
+		Path:       c.Path(),
+		Server:     c.Server,
+		Downloader: downloaderView{DownloaderConfig: c.Downloader, PasswordSet: c.Downloader.Password != ""},
+		Sites:      make([]siteView, 0, len(c.Sites)),
 	}
 	for _, s := range c.Sites {
 		v.Sites = append(v.Sites, siteView{
-			ID:         s.ID,
-			Name:       s.Name,
-			Type:       s.Type,
-			Enabled:    s.Enabled,
-			BaseURL:    s.BaseURL,
-			SearchPath: s.SearchPath,
+			Site:       s,
 			CookieSet:  s.Cookie != "",
 			CookieHint: secretHint(s.Cookie),
-			UserAgent:  s.UserAgent,
-			TimeoutSec: s.TimeoutSec,
 		})
 	}
 	return v
@@ -93,36 +59,20 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 
 // Configuration updates.
 
-type serverInput struct {
-	Addr            string `json:"addr"`
-	DataDir         string `json:"data_dir"`
-	CacheTTLSeconds int    `json:"cache_ttl_seconds"`
-}
-
 type downloaderInput struct {
-	Type     string `json:"type"`
-	URL      string `json:"url"`
-	Username string `json:"username"`
+	config.DownloaderConfig
 	Password string `json:"password"`
-	SavePath string `json:"save_path"`
 }
 
 type siteInput struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Enabled    bool   `json:"enabled"`
-	BaseURL    string `json:"base_url"`
-	SearchPath string `json:"search_path"`
-	Cookie     string `json:"cookie"`
-	UserAgent  string `json:"user_agent"`
-	TimeoutSec int    `json:"timeout_seconds"`
+	config.Site
+	Cookie string `json:"cookie"`
 }
 
 type configInput struct {
-	Server     serverInput     `json:"server"`
-	Downloader downloaderInput `json:"downloader"`
-	Sites      []siteInput     `json:"sites"`
+	Server     config.ServerConfig `json:"server"`
+	Downloader downloaderInput     `json:"downloader"`
+	Sites      []siteInput         `json:"sites"`
 }
 
 // keepOrReplace preserves empty input and clears secrets on a single hyphen.
@@ -149,41 +99,20 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	cur := s.cfg()
-	next := &config.Config{
-		Server: config.ServerConfig{
-			// Rotate tokens through the dedicated endpoint to avoid accidental lockouts.
-			Token:           cur.Server.Token,
-			Addr:            firstNonEmpty(in.Server.Addr, cur.Server.Addr),
-			DataDir:         firstNonEmpty(in.Server.DataDir, cur.Server.DataDir),
-			CacheTTLSeconds: in.Server.CacheTTLSeconds,
-		},
-		Downloader: config.DownloaderConfig{
-			Type:     in.Downloader.Type,
-			URL:      in.Downloader.URL,
-			Username: in.Downloader.Username,
-			Password: keepOrReplace(in.Downloader.Password, cur.Downloader.Password),
-			SavePath: in.Downloader.SavePath,
-		},
-	}
+	next := &config.Config{Server: in.Server, Downloader: in.Downloader.DownloaderConfig}
+	// Only the dedicated rotation endpoint changes the token.
+	next.Server.Token = cur.Server.Token
+	next.Server.Addr = cmp.Or(in.Server.Addr, cur.Server.Addr)
+	next.Server.DataDir = cmp.Or(in.Server.DataDir, cur.Server.DataDir)
+	next.Downloader.Password = keepOrReplace(in.Downloader.Password, cur.Downloader.Password)
 
 	for _, si := range in.Sites {
-		site := config.Site{
-			ID:         si.ID,
-			Name:       si.Name,
-			Type:       si.Type,
-			Enabled:    si.Enabled,
-			BaseURL:    si.BaseURL,
-			SearchPath: si.SearchPath,
-			UserAgent:  si.UserAgent,
-			TimeoutSec: si.TimeoutSec,
-		}
-		// Preserve existing cookies unless a replacement is supplied.
-		if old, ok := cur.FindSite(si.ID); ok {
-			site.Cookie = keepOrReplace(si.Cookie, old.Cookie)
-		} else if si.Cookie != "-" {
-			site.Cookie = si.Cookie
-		}
+		site := si.Site
+		old, _ := cur.FindSite(si.ID)
+		site.Cookie = keepOrReplace(si.Cookie, old.Cookie)
 		next.Sites = append(next.Sites, site)
 	}
 
@@ -196,7 +125,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":               true,
 		"config":           newConfigView(applied),
-		"restart_required": applied.Server.Addr != cur.Server.Addr,
+		"restart_required": applied.Server.Addr != s.initialServer.Addr || applied.Server.DataDir != s.initialServer.DataDir,
 	})
 }
 
@@ -212,6 +141,8 @@ func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	cur := s.cfg()
 	next := *cur
 	next.Server.Token = tok
@@ -220,11 +151,4 @@ func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": tok})
-}
-
-func firstNonEmpty(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
 }

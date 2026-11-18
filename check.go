@@ -42,6 +42,11 @@ cookie = "uid=12345; pass=abcdef; ..."`)
 			fmt.Printf("      base_url=%s  search_path=%s  timeout=%ds\n",
 				site.BaseURL, site.SearchPath, site.TimeoutSec)
 		}
+		if !site.Enabled {
+			fmt.Println("      Status  Disabled; skipping check")
+			continue
+		}
+
 		if site.Type == "nexusphp" {
 			if site.Cookie == "" {
 				fmt.Println("      Cookie  Missing; this site will be skipped")
@@ -49,11 +54,6 @@ cookie = "uid=12345; pass=abcdef; ..."`)
 				continue
 			}
 			fmt.Printf("      Cookie  Set (%d characters)\n", len(site.Cookie))
-		}
-
-		if !site.Enabled {
-			fmt.Println("      Status  Disabled; skipping check")
-			continue
 		}
 
 		a, err := adapter.Build(site)

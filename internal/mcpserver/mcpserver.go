@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/ststyin/torrvia/internal/adapter"
+	"github.com/ststyin/torrvia/internal/download"
 	"github.com/ststyin/torrvia/internal/model"
 	"github.com/ststyin/torrvia/internal/qb"
 	"github.com/ststyin/torrvia/internal/search"
@@ -17,9 +18,8 @@ import (
 
 // Deps contains MCP dependencies. Accessors pick up downloader changes without restarting the service.
 type Deps struct {
-	Svc        *search.Service
-	QB         func() *qb.Client
-	QBSavePath func() string
+	Downloads *download.Service
+	Svc       *search.Service
 }
 
 // Handler serves Streamable HTTP at /mcp, keeping the MCP lifecycle tied to this service.
@@ -89,6 +89,10 @@ func registerSearch(s *mcp.Server, d Deps) {
 		Description: "Search all configured private trackers concurrently, ranking results by seeders multiplied by promotion weight. " +
 			"Individual site failures do not affect other results. For empty results, remove the year, shorten to the main title, then try another translation.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in SearchInput) (*mcp.CallToolResult, SearchOutput, error) {
+		in.Query = strings.TrimSpace(in.Query)
+		if in.Query == "" {
+			return nil, SearchOutput{}, errors.New("Missing search keyword")
+		}
 		limit := in.Limit
 		if limit <= 0 {
 			limit = 20
@@ -257,16 +261,7 @@ func registerDownloads(s *mcp.Server, d Deps) {
 			"Removed tasks and files outside qBittorrent are not included; an empty result is not proof a resource was never downloaded.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in qb.ListOptions) (*mcp.CallToolResult, qb.ListResult, error) {
-		var client *qb.Client
-		if d.QB != nil {
-			client = d.QB()
-		}
-		if client == nil {
-			return nil, qb.ListResult{}, errors.New("No downloader is configured on the server")
-		}
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		out, err := client.List(ctx, in)
+		out, err := d.Downloads.List(ctx, in)
 		return nil, out, err
 	})
 }
@@ -279,64 +274,17 @@ type DownloadInput struct {
 	SavePath string `json:"save_path,omitempty" jsonschema:"Optional downloader save path; leave empty for the configured default"`
 }
 
-// DownloadOutput reports the submission result.
-type DownloadOutput struct {
-	OK            bool        `json:"ok"`
-	Via           string      `json:"via,omitempty" jsonschema:"torrent_file means server-side torrent retrieval; magnet means a direct magnet submission"`
-	Title         string      `json:"title,omitempty"`
-	AlreadyExists bool        `json:"already_exists,omitempty" jsonschema:"True means submission was skipped because a matching task already exists; inspect existing for its live status"`
-	Match         string      `json:"match,omitempty" jsonschema:"Existing task matched by hash or by normalized name_and_size (within 8 percent)"`
-	Existing      *qb.Torrent `json:"existing,omitempty"`
-	Error         string      `json:"error,omitempty"`
-}
-
 func registerDownload(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "download_torrent",
 		Description: "Submit a resource to qBittorrent to begin downloading. This tool consumes bandwidth and disk space; " +
 			"call it only when the user explicitly requests a download. Checks existing tasks first and skips matching downloads, " +
 			"returning already_exists and the task status. A successful submission does not mean download completion.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in DownloadInput) (*mcp.CallToolResult, DownloadOutput, error) {
-		client := d.QB()
-		if client == nil {
-			return nil, DownloadOutput{Error: "No downloader is configured on the server"}, nil
-		}
-		t, ok := d.Svc.Get(in.ID)
-		if !ok {
-			return nil, DownloadOutput{Error: "Resource not found. Search again and retry"}, nil
-		}
-
-		savePath := in.SavePath
-		if savePath == "" && d.QBSavePath != nil {
-			savePath = d.QBSavePath()
-		}
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		existing, match, err := client.FindExisting(ctx, t)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in DownloadInput) (*mcp.CallToolResult, download.Result, error) {
+		out, err := d.Downloads.Submit(ctx, in.ID, in.SavePath)
 		if err != nil {
-			return nil, DownloadOutput{Error: err.Error()}, nil
+			out.Error = err.Error()
 		}
-		if existing != nil {
-			return nil, DownloadOutput{OK: true, Title: t.Title, AlreadyExists: true, Match: match, Existing: existing}, nil
-		}
-
-		if a, ok := d.Svc.Adapter(t.Site); ok && t.DownloadURL != "" {
-			if f, ok := a.(adapter.TorrentFetcher); ok {
-				data, name, err := f.FetchTorrent(ctx, t)
-				if err == nil && len(data) > 0 {
-					if err := client.AddFile(ctx, data, name, savePath); err != nil {
-						return nil, DownloadOutput{Error: err.Error()}, nil
-					}
-					return nil, DownloadOutput{OK: true, Via: "torrent_file", Title: t.Title}, nil
-				}
-			}
-		}
-		if t.Magnet != "" {
-			if err := client.AddLink(ctx, t.Magnet, savePath); err != nil {
-				return nil, DownloadOutput{Error: err.Error()}, nil
-			}
-			return nil, DownloadOutput{OK: true, Via: "magnet", Title: t.Title}, nil
-		}
-		return nil, DownloadOutput{Error: "This resource has no usable torrent file or magnet link"}, nil
+		return nil, out, nil
 	})
 }

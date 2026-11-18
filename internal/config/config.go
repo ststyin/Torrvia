@@ -1,4 +1,4 @@
-// Package config reads and writes config.toml. TORRVIA_CONFIG selects its path; all settings live in this file. A hand-written template preserves useful comments.
+// Package config reads and writes config.toml. TORRVIA_CONFIG selects its path; all settings live in this file.
 package config
 
 import (
@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,28 +21,28 @@ type Site struct {
 	Name       string `toml:"name" json:"name"`
 	Type       string `toml:"type" json:"type"` // nexusphp | mock
 	Enabled    bool   `toml:"enabled" json:"enabled"`
-	BaseURL    string `toml:"base_url" json:"base_url"`
-	SearchPath string `toml:"search_path" json:"search_path"`
-	Cookie     string `toml:"cookie" json:"-"`
-	UserAgent  string `toml:"user_agent" json:"-"`
-	TimeoutSec int    `toml:"timeout_seconds" json:"timeout_seconds"`
+	BaseURL    string `toml:"base_url,omitempty" json:"base_url"`
+	SearchPath string `toml:"search_path,omitempty" json:"search_path"`
+	Cookie     string `toml:"cookie,omitempty" json:"-"`
+	UserAgent  string `toml:"user_agent,omitempty" json:"user_agent"`
+	TimeoutSec int    `toml:"timeout_seconds,omitempty" json:"timeout_seconds"`
 }
 
 // ServerConfig contains service settings.
 type ServerConfig struct {
-	Addr            string `toml:"addr"`
-	Token           string `toml:"token"`
-	DataDir         string `toml:"data_dir"`
-	CacheTTLSeconds int    `toml:"cache_ttl_seconds"`
+	Addr            string `toml:"addr" json:"addr" comment:"Changes to the listen address or data directory require a restart."`
+	Token           string `toml:"token" json:"token" comment:"Bearer token for /api and /mcp. Leave blank to generate a token at startup."`
+	DataDir         string `toml:"data_dir" json:"data_dir"`
+	CacheTTLSeconds int    `toml:"cache_ttl_seconds" json:"cache_ttl_seconds" comment:"Set to 0 to disable search caching."`
 }
 
 // DownloaderConfig configures the download client.
 type DownloaderConfig struct {
-	Type     string `toml:"type"` // qbittorrent | empty
-	URL      string `toml:"url"`
-	Username string `toml:"username"`
-	Password string `toml:"password"`
-	SavePath string `toml:"save_path"`
+	Type     string `toml:"type" json:"type"` // qbittorrent | empty
+	URL      string `toml:"url" json:"url"`
+	Username string `toml:"username" json:"username"`
+	Password string `toml:"password" json:"-"`
+	SavePath string `toml:"save_path" json:"save_path" comment:"Leave blank to use the downloader default directory."`
 }
 
 // Enabled reports whether a supported downloader is configured.
@@ -53,9 +52,9 @@ func (d DownloaderConfig) Enabled() bool {
 
 // Config contains all service configuration.
 type Config struct {
-	Server     ServerConfig     `toml:"server"`
-	Downloader DownloaderConfig `toml:"downloader"`
-	Sites      []Site           `toml:"sites"`
+	Server     ServerConfig     `toml:"server" comment:"Torrvia configuration. Keep this file private; it contains tracker and downloader credentials."`
+	Downloader DownloaderConfig `toml:"downloader" comment:"Use qbittorrent for downloads. Leave the URL empty for search-only operation."`
+	Sites      []Site           `toml:"sites" comment:"Supported site types: nexusphp (private tracker with base URL and cookie) or mock (demo)."`
 
 	path string // Configuration path; excluded from serialization
 }
@@ -124,6 +123,8 @@ func Load(path string) (*Config, error) {
 		if err := c.Save(path); err != nil {
 			return nil, err
 		}
+	} else if err := c.Validate(); err != nil {
+		return nil, err
 	}
 	return &c, nil
 }
@@ -249,7 +250,10 @@ func (c *Config) Save(path string) error {
 		return errors.New("Configuration file path is unknown")
 	}
 
-	data := render(c)
+	data, err := toml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("Failed to encode configuration: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("Failed to create configuration directory: %w", err)
@@ -291,81 +295,6 @@ func NewToken() (string, error) {
 		return "", fmt.Errorf("Failed to generate token: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
-}
-
-// q quotes strings for TOML using Go's compatible escaping rules for paths, cookies, and user agents.
-func q(s string) string { return strconv.Quote(s) }
-
-// render uses a template to preserve comments in the TOML configuration.
-func render(c *Config) []byte {
-	var b strings.Builder
-
-	b.WriteString(`# Torrvia configuration
-#
-# Edit this file or use Settings in the Web UI; both update the same configuration.
-# Changes apply immediately, except for the listen address, which requires a restart.
-#
-# This file contains tracker cookies and downloader credentials.
-# Keep permissions at 600. The file is ignored by Git; never commit credentials.
-
-`)
-
-	b.WriteString("[server]\n")
-	fmt.Fprintf(&b, "addr = %s\n", q(c.Server.Addr))
-	b.WriteString("# All /api and /mcp requests require Authorization: Bearer <token>.\n")
-	b.WriteString("# Leave blank to generate a token at startup. Update clients when changing it.\n")
-	fmt.Fprintf(&b, "token = %s\n", q(c.Server.Token))
-	fmt.Fprintf(&b, "data_dir = %s\n", q(c.Server.DataDir))
-	b.WriteString("# Search cache lifetime in seconds. Set to 0 to disable caching.\n")
-	fmt.Fprintf(&b, "cache_ttl_seconds = %d\n\n", c.Server.CacheTTLSeconds)
-
-	b.WriteString(`# Downloader type: qbittorrent. Leave empty for search-only operation.
-# The service retrieves torrent files with tracker cookies before passing them to the downloader.
-# Tracker cookies stay on this machine.
-[downloader]
-`)
-	fmt.Fprintf(&b, "type = %s\n", q(c.Downloader.Type))
-	fmt.Fprintf(&b, "url = %s\n", q(c.Downloader.URL))
-	fmt.Fprintf(&b, "username = %s\n", q(c.Downloader.Username))
-	fmt.Fprintf(&b, "password = %s\n", q(c.Downloader.Password))
-	b.WriteString("# Leave blank to use the downloader default directory.\n")
-	fmt.Fprintf(&b, "save_path = %s\n", q(c.Downloader.SavePath))
-
-	b.WriteString(`
-# Sites.
-#
-# Supported site types:
-#   nexusphp: private tracker template; requires base_url and cookie
-#   mock: demo data for testing Web, REST, and MCP
-#
-# Log in to the site, open browser developer tools > Network, and copy the complete Cookie header.
-# Enable Remember me if available; session-only logins also require PHPSESSID.
-`)
-
-	for _, s := range c.Sites {
-		b.WriteString("\n[[sites]]\n")
-		fmt.Fprintf(&b, "id = %s\n", q(s.ID))
-		fmt.Fprintf(&b, "name = %s\n", q(s.Name))
-		fmt.Fprintf(&b, "type = %s\n", q(s.Type))
-		fmt.Fprintf(&b, "enabled = %t\n", s.Enabled)
-		if s.BaseURL != "" {
-			fmt.Fprintf(&b, "base_url = %s\n", q(s.BaseURL))
-		}
-		if s.Type == "nexusphp" {
-			fmt.Fprintf(&b, "search_path = %s\n", q(s.SearchPath))
-		}
-		if s.Cookie != "" {
-			fmt.Fprintf(&b, "cookie = %s\n", q(s.Cookie))
-		}
-		if s.UserAgent != "" {
-			fmt.Fprintf(&b, "user_agent = %s\n", q(s.UserAgent))
-		}
-		if s.TimeoutSec > 0 {
-			fmt.Fprintf(&b, "timeout_seconds = %d\n", s.TimeoutSec)
-		}
-	}
-
-	return []byte(b.String())
 }
 
 // bootstrap creates the default configuration when the file is missing.

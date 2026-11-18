@@ -6,6 +6,7 @@
 /data/
 
 # Local credentials and configuration (the example is safe to publish)
+/config/
 /config*.toml
 !/config.example.toml
 .env

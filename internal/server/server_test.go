@@ -11,6 +11,7 @@ import (
 
 	"github.com/ststyin/torrvia/internal/adapter"
 	"github.com/ststyin/torrvia/internal/config"
+	"github.com/ststyin/torrvia/internal/download"
 	"github.com/ststyin/torrvia/internal/model"
 	"github.com/ststyin/torrvia/internal/qb"
 	"github.com/ststyin/torrvia/internal/search"
@@ -48,7 +49,7 @@ func TestDownloadsAPI(t *testing.T) {
 	client := qb.New(qbsrv.URL, "", "")
 	cfg := &config.Config{}
 	cfg.Server.Token = "test-token"
-	handler := New(Deps{Cfg: func() *config.Config { return cfg }, QB: func() *qb.Client { return client }}).Handler()
+	handler := New(Deps{Cfg: func() *config.Config { return cfg }, Downloads: download.New(nil, func() (*qb.Client, string) { return client, "" })}).Handler()
 	for _, tc := range []struct {
 		query string
 		token string
@@ -81,7 +82,7 @@ func TestDownloadsAPI(t *testing.T) {
 }
 
 func TestDownloadsAPIUnavailable(t *testing.T) {
-	s := &Server{qb: func() *qb.Client { return nil }}
+	s := &Server{}
 	w := httptest.NewRecorder()
 	s.downloads(w, httptest.NewRequest(http.MethodGet, "/api/downloads", nil))
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "error") {
@@ -97,7 +98,7 @@ func TestDownloadsAPIUnavailable(t *testing.T) {
 	}))
 	defer qbsrv.Close()
 	client := qb.New(qbsrv.URL, "", "")
-	s.qb = func() *qb.Client { return client }
+	s.downloadsSvc = download.New(nil, func() (*qb.Client, string) { return client, "" })
 	w = httptest.NewRecorder()
 	s.downloads(w, httptest.NewRequest(http.MethodGet, "/api/downloads", nil))
 	if w.Code != http.StatusBadGateway {
@@ -126,7 +127,7 @@ func TestDownloadAPISkipsExistingTask(t *testing.T) {
 	}))
 	defer qbsrv.Close()
 	client := qb.New(qbsrv.URL, "", "")
-	s := &Server{svc: svc, qb: func() *qb.Client { return client }, cfg: func() *config.Config { return &config.Config{} }}
+	s := &Server{downloadsSvc: download.New(svc, func() (*qb.Client, string) { return client, "" })}
 	w := httptest.NewRecorder()
 	s.download(w, httptest.NewRequest(http.MethodPost, "/api/download", strings.NewReader(`{"id":"`+resource.ID+`"}`)))
 	var out struct {

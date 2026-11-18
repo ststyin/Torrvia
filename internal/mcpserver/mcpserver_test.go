@@ -15,7 +15,7 @@ import (
 
 	"github.com/ststyin/torrvia/internal/adapter"
 	"github.com/ststyin/torrvia/internal/config"
-	"github.com/ststyin/torrvia/internal/model"
+	"github.com/ststyin/torrvia/internal/download"
 	"github.com/ststyin/torrvia/internal/qb"
 	"github.com/ststyin/torrvia/internal/search"
 )
@@ -72,7 +72,7 @@ func TestListDownloadsTool(t *testing.T) {
 	}))
 	defer qbsrv.Close()
 	client := qb.New(qbsrv.URL, "", "")
-	session := testSession(t, Deps{QB: func() *qb.Client { return client }})
+	session := testSession(t, Deps{Downloads: download.New(nil, func() (*qb.Client, string) { return client, "" })})
 	tools, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +116,7 @@ func TestDownloadChecksExistingBeforeSubmission(t *testing.T) {
 	for _, mode := range []string{"existing", "new", "unavailable"} {
 		t.Run(mode, func(t *testing.T) {
 			var adds atomic.Int32
+			var results SearchOutput
 			qbsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/api/v2/auth/login":
@@ -130,8 +131,8 @@ func TestDownloadChecksExistingBeforeSubmission(t *testing.T) {
 						fmt.Fprint(w, "[]")
 						return
 					}
-					items, _ := a.Search(r.Context(), model.Query{Keyword: "Interstellar"})
-					json.NewEncoder(w).Encode([]qb.Torrent{{Hash: strings.Repeat("a", 40), Name: items[0].Title, TotalSize: items[0].SizeBytes, Progress: .75, State: "downloading"}})
+					item := results.Items[0]
+					json.NewEncoder(w).Encode([]qb.Torrent{{Hash: strings.Repeat("a", 40), Name: item.Title, TotalSize: int64(item.SizeGB * (1 << 30)), Progress: .75, State: "downloading"}})
 				case "/api/v2/torrents/add":
 					adds.Add(1)
 					if err := r.ParseForm(); err != nil || !strings.HasPrefix(r.Form.Get("urls"), "magnet:") || r.Form.Get("savepath") != "/configured" {
@@ -144,13 +145,13 @@ func TestDownloadChecksExistingBeforeSubmission(t *testing.T) {
 			}))
 			defer qbsrv.Close()
 			client := qb.New(qbsrv.URL, "", "")
-			session := testSession(t, Deps{Svc: svc, QB: func() *qb.Client { return client }, QBSavePath: func() string { return "/configured" }})
-			var results SearchOutput
+			session := testSession(t, Deps{Svc: svc, Downloads: download.New(svc, func() (*qb.Client, string) { return client, "/configured" })})
 			callTool(t, session, "search_torrents", map[string]any{"query": "Interstellar"}, &results)
-			// Choose the same raw release that the fake downloader lists, independent of ranking.
-			items, _ := a.Search(context.Background(), model.Query{Keyword: "Interstellar"})
-			var out DownloadOutput
-			callTool(t, session, "download_torrent", map[string]any{"id": items[0].ID}, &out)
+			if len(results.Items) == 0 {
+				t.Fatal("expected a search result")
+			}
+			var out download.Result
+			callTool(t, session, "download_torrent", map[string]any{"id": results.Items[0].ID}, &out)
 			switch mode {
 			case "existing":
 				if !out.OK || !out.AlreadyExists || out.Existing == nil || out.Existing.Progress != .75 || adds.Load() != 0 {

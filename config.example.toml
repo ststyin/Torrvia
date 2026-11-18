@@ -1,7 +1,7 @@
 # Torrvia configuration
 #
 # Edit this file or use Settings in the Web UI; both update the same configuration.
-# Changes apply immediately, except for the listen address, which requires a restart.
+# Changes apply immediately, except for the listen address and data directory, which require a restart.
 #
 # This file contains tracker cookies and downloader credentials.
 # Keep permissions at 600. The file is ignored by Git; never commit credentials.

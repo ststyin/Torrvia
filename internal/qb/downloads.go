@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/ststyin/torrvia/internal/model"
@@ -92,21 +93,18 @@ func (c *Client) List(ctx context.Context, opts ListOptions) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	matched := make([]Torrent, 0, len(items))
-	query := strings.ToLower(strings.TrimSpace(opts.Query))
-	normalized := model.NormalizeTitle(query)
-	for _, t := range items {
-		if query != "" && !strings.Contains(strings.ToLower(t.Name), query) &&
-			(normalized == "" || !strings.Contains(model.NormalizeTitle(t.Name), normalized)) {
-			continue
-		}
-		matched = append(matched, t)
+	if query := strings.ToLower(strings.TrimSpace(opts.Query)); query != "" {
+		normalized := model.NormalizeTitle(query)
+		items = slices.DeleteFunc(items, func(t Torrent) bool {
+			return !strings.Contains(strings.ToLower(t.Name), query) &&
+				(normalized == "" || !strings.Contains(model.NormalizeTitle(t.Name), normalized))
+		})
 	}
-	start := min(opts.Offset, len(matched))
-	end := start + min(opts.Limit, len(matched)-start)
+	start := min(opts.Offset, len(items))
+	end := start + min(opts.Limit, len(items)-start)
 	return ListResult{
-		Count: end - start, Total: len(matched), Items: matched[start:end],
-		Limit: opts.Limit, Offset: opts.Offset, HasMore: end < len(matched),
+		Count: end - start, Total: len(items), Items: items[start:end],
+		Limit: opts.Limit, Offset: opts.Offset, HasMore: end < len(items),
 	}, nil
 }
 
@@ -144,7 +142,7 @@ func (c *Client) FindExisting(ctx context.Context, resource model.Torrent) (*Tor
 	if err != nil {
 		return nil, "", fmt.Errorf("Could not check existing downloads: %w", err)
 	}
-	hash := magnetHash(resource.Magnet)
+	hash := MagnetHash(resource.Magnet)
 	for _, t := range items {
 		if hash != "" && strings.EqualFold(t.Hash, hash) {
 			return &t, "hash", nil
@@ -159,21 +157,15 @@ func (c *Client) FindExisting(ctx context.Context, resource model.Torrent) (*Tor
 		if size <= 0 || resource.SizeBytes <= 0 {
 			continue
 		}
-		name := t.Name
-		for _, ext := range []string{".mkv", ".mp4", ".avi", ".ts"} {
-			if strings.HasSuffix(strings.ToLower(name), ext) {
-				name = name[:len(name)-len(ext)]
-				break
-			}
-		}
-		if model.NormalizeTitle(resource.Title) != "" && resource.SameResource(&model.Torrent{Title: name, SizeBytes: size}) {
+		if resource.SameResource(&model.Torrent{Title: t.Name, SizeBytes: size}) {
 			return &t, "name_and_size", nil
 		}
 	}
 	return nil, "", nil
 }
 
-func magnetHash(magnet string) string {
+// MagnetHash extracts a canonical BitTorrent v1 infohash from a magnet link.
+func MagnetHash(magnet string) string {
 	u, err := url.Parse(magnet)
 	if err != nil || u.Scheme != "magnet" {
 		return ""

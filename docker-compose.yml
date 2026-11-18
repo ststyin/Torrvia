@@ -10,10 +10,12 @@ services:
     ports:
       - "${TORRVIA_PORT:-8080}:8080"
     volumes:
-      # Configuration contains credentials; keep permissions at 600.
-      # Run ./torrvia -check on the host to create this file before the first container startup.
-      # Docker creates a directory if the mounted file does not exist.
-      - ./config.toml:/config/config.toml
+      # Mount the directory so atomic Settings saves can rename the file inside it.
+      - type: bind
+        source: ./config
+        target: /config
+        bind:
+          create_host_path: false
       # Search history
       - ./data:/data
     environment:

@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -20,73 +21,114 @@ import (
 // nexusphp handles tracker variations in search paths, promotion icons, and table layouts. Column classes are preferred; positional parsing falls back to numeric cells after the size column.
 type nexusphp struct {
 	site   config.Site
+	origin *url.URL
 	client *http.Client
 }
 
 func newNexusPHP(site config.Site) *nexusphp {
-	return &nexusphp{
-		site: site,
+	base, _ := url.Parse(site.BaseURL)
+	n := &nexusphp{
+		origin: base,
+		site:   site,
 		client: &http.Client{
 			Timeout: time.Duration(site.TimeoutSec) * time.Second,
 		},
 	}
+	n.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("Too many tracker redirects")
+		}
+		n.trackerCredentials(req)
+		return nil
+	}
+	return n
 }
 
 func (n *nexusphp) ID() string   { return n.site.ID }
 func (n *nexusphp) Name() string { return n.site.Name }
 func (n *nexusphp) Type() string { return "nexusphp" }
 
-func (n *nexusphp) headers() map[string]string {
+func (n *nexusphp) setHeaders(req *http.Request) {
 	ua := n.site.UserAgent
 	if ua == "" {
 		ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
 			"(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 	}
-	return map[string]string{
-		"Cookie":                    n.site.Cookie,
-		"User-Agent":                ua,
-		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-		"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.8",
-		"Upgrade-Insecure-Requests": "1",
-		"Sec-Fetch-Dest":            "document",
-		"Sec-Fetch-Mode":            "navigate",
-		"Sec-Fetch-Site":            "same-origin",
-		"Sec-Fetch-User":            "?1",
-		"Cache-Control":             "max-age=0",
-		"Referer":                   n.site.BaseURL + "/",
-	}
+	req.Header.Set("User-Agent", ua)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Cache-Control", "max-age=0")
+	n.trackerCredentials(req)
 }
 
-func (n *nexusphp) get(ctx context.Context, rawURL string) ([]byte, error) {
+// Apply credentials to the exact tracker origin. Go's default redirect policy
+// also forwards cookies to subdomains, which may be separate download hosts.
+func (n *nexusphp) trackerCredentials(req *http.Request) {
+	if n.origin != nil && req.URL.Scheme == n.origin.Scheme &&
+		strings.EqualFold(req.URL.Hostname(), n.origin.Hostname()) && originPort(req.URL) == originPort(n.origin) {
+		req.Header.Set("Cookie", n.site.Cookie)
+		req.Header.Set("Referer", n.site.BaseURL+"/")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		return
+	}
+	req.Header.Del("Cookie")
+	req.Header.Del("Authorization")
+	req.Header.Del("Referer")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.URL.User = nil
+}
+
+func originPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
+// fetch uses the site's credentials and rejects partial reads above the allowed size.
+func (n *nexusphp) fetch(ctx context.Context, rawURL string, limit int64) ([]byte, *url.URL, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for k, v := range n.headers() {
-		if v != "" {
-			req.Header.Set(k, v)
-		}
-	}
+	n.setHeaders(req)
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Request failed: %w", err)
+		return nil, nil, fmt.Errorf("Request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read response: %w", err)
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Site returned HTTP %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("Site returned HTTP %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("Failed to read response: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, nil, fmt.Errorf("Site response exceeds %d bytes", limit)
+	}
+	return body, resp.Request.URL, nil
+}
 
+func (n *nexusphp) get(ctx context.Context, rawURL string) ([]byte, error) {
+	body, finalURL, err := n.fetch(ctx, rawURL, 8<<20)
+	if err != nil {
+		return nil, err
+	}
 	// Detect challenge pages before parsing: some return HTTP 200 instead of an error.
 	if isCloudflareChallenge(string(body)) {
 		return nil, fmt.Errorf("Blocked by a Cloudflare challenge: cf_clearance has expired or does not match the current IP or User-Agent")
 	}
 	// A login-page redirect means the supplied credentials were rejected.
-	if strings.Contains(resp.Request.URL.Path, "login") || looksLikeLogin(string(body)) {
+	if strings.Contains(finalURL.Path, "login") || looksLikeLogin(string(body)) {
 		return nil, n.authError()
 	}
 	return body, nil
@@ -128,17 +170,18 @@ func looksLikeLogin(body string) bool {
 	return strings.Contains(lower, `type="password"`) && !strings.Contains(lower, "details.php?id=")
 }
 
-func (n *nexusphp) searchURL(keyword string) string {
-	params := url.Values{}
-	params.Set("search", keyword)
-	params.Set("search_area", "0") // 0 = search titles only
-	params.Set("search_mode", "0")
-	return n.site.BaseURL + n.site.SearchPath + "?" + params.Encode()
-}
-
 // DumpPage returns the raw search HTML for the site debugging command.
 func (n *nexusphp) DumpPage(ctx context.Context, keyword string) ([]byte, error) {
-	return n.get(ctx, n.searchURL(keyword))
+	u, err := url.Parse(n.site.BaseURL + n.site.SearchPath)
+	if err != nil {
+		return nil, fmt.Errorf("Invalid tracker search URL: %w", err)
+	}
+	params := u.Query()
+	params.Set("search", keyword)
+	params.Set("search_area", "0")
+	params.Set("search_mode", "0")
+	u.RawQuery = params.Encode()
+	return n.get(ctx, u.String())
 }
 
 func (n *nexusphp) Search(ctx context.Context, q model.Query) ([]model.Torrent, error) {
@@ -146,11 +189,11 @@ func (n *nexusphp) Search(ctx context.Context, q model.Query) ([]model.Torrent, 
 	if keyword == "" {
 		return nil, nil
 	}
-	body, err := n.get(ctx, n.searchURL(keyword))
+	body, err := n.DumpPage(ctx, keyword)
 	if err != nil {
 		return nil, err
 	}
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("Failed to parse HTML: %w", err)
 	}
@@ -167,30 +210,12 @@ func (n *nexusphp) FetchTorrent(ctx context.Context, t model.Torrent) ([]byte, s
 	if t.DownloadURL == "" {
 		return nil, "", fmt.Errorf("This resource has no torrent download URL")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.DownloadURL, nil)
+	data, _, err := n.fetch(ctx, t.DownloadURL, 16<<20)
 	if err != nil {
 		return nil, "", err
 	}
-	for k, v := range n.headers() {
-		if v != "" {
-			req.Header.Set(k, v)
-		}
-	}
-	resp, err := n.client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("Failed to fetch torrent: %w", err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, "", fmt.Errorf("Failed to read torrent: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK || len(data) == 0 {
-		return nil, "", fmt.Errorf("Site did not return a valid torrent (HTTP %d)", resp.StatusCode)
-	}
 	// A bencoded dictionary starts with 'd'; use it as a basic validity check.
-	if data[0] != 'd' {
+	if len(data) == 0 || data[0] != 'd' {
 		return nil, "", fmt.Errorf("Response is not a torrent file; the cookie may have expired")
 	}
 
@@ -351,57 +376,42 @@ func (n *nexusphp) parseByColumnClass(row *goquery.Selection, t *model.Torrent) 
 
 // parseByPosition locates size and subsequent peer counts in older table layouts.
 func (n *nexusphp) parseByPosition(row *goquery.Selection, t *model.Torrent) {
-	sizeIdx := -1
-	tdIdx := -1
-	var digits []struct {
-		idx int
-		val int
-	}
-
+	var counts []int
+	foundSize := false
 	row.Find("td").Each(func(_ int, td *goquery.Selection) {
-		tdIdx++
 		text := strings.TrimSpace(td.Text())
-
-		if sizeIdx < 0 {
-			if v, ok := parseSizeFromTD(td, text); ok {
-				t.SizeBytes = v
-				sizeIdx = tdIdx
-			}
-		}
-		if digitsRe.MatchString(text) {
-			if v, err := strconv.Atoi(text); err == nil {
-				digits = append(digits, struct {
-					idx int
-					val int
-				}{tdIdx, v})
-			}
-		}
 		if t.PublishTime == "" {
-			if ts := findTimestamp(td); ts != "" {
-				t.PublishTime = ts
+			t.PublishTime = findTimestamp(td)
+		}
+		if !foundSize {
+			if size, ok := parseSizeFromTD(td, text); ok {
+				t.SizeBytes, foundSize = size, true
+				// Peer columns follow size. Without a size column, fall back to
+				// the first two numeric cells as on older templates.
+				counts = counts[:0]
+				return
+			}
+		}
+		if len(counts) < 3 && digitsRe.MatchString(text) {
+			if value, err := strconv.Atoi(text); err == nil {
+				counts = append(counts, value)
 			}
 		}
 	})
-
-	if sizeIdx >= 0 {
-		var picked []int
-		for _, d := range digits {
-			if d.idx > sizeIdx {
-				picked = append(picked, d.val)
-			}
+	if foundSize {
+		if len(counts) >= 1 {
+			t.Seeders = counts[0]
 		}
-		if len(picked) >= 1 {
-			t.Seeders = picked[0]
+		if len(counts) >= 2 {
+			t.Leechers = counts[1]
 		}
-		if len(picked) >= 2 {
-			t.Leechers = picked[1]
+		if len(counts) >= 3 {
+			t.Snatched = counts[2]
 		}
-		if len(picked) >= 3 {
-			t.Snatched = picked[2]
-		}
-	} else if len(digits) >= 2 {
-		t.Seeders, t.Leechers = digits[0].val, digits[1].val
+	} else if len(counts) >= 2 {
+		t.Seeders, t.Leechers = counts[0], counts[1]
 	}
+
 }
 
 func textOf(sel *goquery.Selection, selector string) string {
@@ -478,10 +488,8 @@ func findSizeInText(s string) (int64, bool) {
 }
 
 func parseSizeFromTD(td *goquery.Selection, text string) (int64, bool) {
-	if v := strings.TrimSpace(td.AttrOr("title", "")); sizeParse.MatchString(v) {
-		if b, ok := parseSize(v); ok {
-			return b, true
-		}
+	if b, ok := parseSize(td.AttrOr("title", "")); ok {
+		return b, true
 	}
 	td.Find("[title]").EachWithBreak(func(_ int, el *goquery.Selection) bool {
 		v := strings.TrimSpace(el.AttrOr("title", ""))
@@ -491,10 +499,7 @@ func parseSizeFromTD(td *goquery.Selection, text string) (int64, bool) {
 		}
 		return true
 	})
-	if sizeParse.MatchString(text) {
-		return parseSize(text)
-	}
-	return 0, false
+	return parseSize(text)
 }
 
 func parseSize(s string) (int64, bool) {

@@ -36,18 +36,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var site *config.Site
-	for i := range cfg.Sites {
-		if cfg.Sites[i].ID == *siteID {
-			site = &cfg.Sites[i]
-			break
-		}
-	}
-	if site == nil {
+	site, ok := cfg.FindSite(*siteID)
+	if !ok {
 		log.Fatalf("Site %q not found", *siteID)
 	}
 
-	a, err := adapter.Build(*site)
+	a, err := adapter.Build(site)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -82,7 +76,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Torrent retrieval failed: %v", err)
 		}
-		fmt.Printf("Torrent: %s  Size: %d bytes  First 4 bytes: %q\n", name, len(data), string(data[:4]))
+		fmt.Printf("Torrent: %s  Size: %d bytes  First 4 bytes: %q\n", name, len(data), string(data[:min(len(data), 4)]))
 		return
 	}
 

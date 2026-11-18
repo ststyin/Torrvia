@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/ststyin/torrvia/internal/adapter"
 	"github.com/ststyin/torrvia/internal/config"
+	"github.com/ststyin/torrvia/internal/download"
 	"github.com/ststyin/torrvia/internal/mcpserver"
 	"github.com/ststyin/torrvia/internal/qb"
 	"github.com/ststyin/torrvia/internal/search"
@@ -60,13 +62,13 @@ func main() {
 		os.Exit(runCheck(cfg))
 	}
 
-	// Read configuration and downloader clients through atomic pointers so changes take effect without rebuilding the HTTP server.
-	var (
-		cfgPtr atomic.Pointer[config.Config]
-		qbPtr  atomic.Pointer[qb.Client]
-	)
-	cfgPtr.Store(cfg)
-	qbPtr.Store(newQBClient(cfg.Downloader))
+	// Publish the configured downloader and its save path together during a settings update.
+	type runtimeConfig struct {
+		cfg    *config.Config
+		client *qb.Client
+	}
+	var current atomic.Pointer[runtimeConfig]
+	current.Store(&runtimeConfig{cfg, newQBClient(cfg.Downloader)})
 
 	adapters := buildAdapters(cfg)
 	if len(adapters) == 0 {
@@ -86,37 +88,48 @@ func main() {
 		if err := next.Validate(); err != nil {
 			return err
 		}
-		nextAdapters := buildAdapters(next)
-		if len(nextAdapters) == 0 && len(next.EnabledSites()) > 0 {
-			return errors.New("Failed to initialize all sites; configuration was not saved")
+		previous := current.Load()
+		sitesChanged := !slices.Equal(next.Sites, previous.cfg.Sites) || next.CacheTTL() != previous.cfg.CacheTTL()
+		var nextAdapters []adapter.Adapter
+		if sitesChanged {
+			nextAdapters = buildAdapters(next)
+			if len(nextAdapters) != len(next.EnabledSites()) {
+				return errors.New("Failed to initialize configured sites")
+			}
 		}
 		if err := next.Save(path); err != nil {
 			return err
 		}
-		svc.ReplaceAdapters(nextAdapters, next.CacheTTL())
-		qbPtr.Store(newQBClient(next.Downloader))
-		cfgPtr.Store(next)
-		log.Printf("Configuration updated: %d sites, downloader enabled: %v", len(nextAdapters), next.Downloader.Enabled())
+		if sitesChanged {
+			svc.ReplaceAdapters(nextAdapters, next.CacheTTL())
+		}
+		client := previous.client
+		if old, d := previous.cfg.Downloader, next.Downloader; old.URL != d.URL || old.Username != d.Username || old.Password != d.Password || old.Enabled() != d.Enabled() {
+			client = newQBClient(d)
+		}
+		current.Store(&runtimeConfig{next, client})
+		log.Printf("Configuration updated: %d sites, downloader enabled: %v", len(next.EnabledSites()), next.Downloader.Enabled())
 		return nil
 	}
 
+	downloads := download.New(svc, func() (*qb.Client, string) {
+		snapshot := current.Load()
+		return snapshot.client, snapshot.cfg.Downloader.SavePath
+	})
 	mcpHandler := mcpserver.Handler(mcpserver.Deps{
-		Svc: svc,
-		QB:  func() *qb.Client { return qbPtr.Load() },
-		QBSavePath: func() string {
-			return cfgPtr.Load().Downloader.SavePath
-		},
+		Downloads: downloads,
+		Svc:       svc,
 	})
 
 	server.SetVersion(version)
 	srv := server.New(server.Deps{
-		Cfg:   func() *config.Config { return cfgPtr.Load() },
-		Svc:   svc,
-		Hist:  hist,
-		QB:    func() *qb.Client { return qbPtr.Load() },
-		Web:   webFS,
-		MCP:   mcpHandler,
-		Apply: apply,
+		Downloads: downloads,
+		Cfg:       func() *config.Config { return current.Load().cfg },
+		Svc:       svc,
+		Hist:      hist,
+		Web:       webFS,
+		MCP:       mcpHandler,
+		Apply:     apply,
 	})
 
 	httpSrv := &http.Server{

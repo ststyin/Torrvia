@@ -154,7 +154,7 @@ func TestFindExistingChecksAllTasks(t *testing.T) {
 		t.Fatalf("renamed task not found: %+v, %s, %v", got, match, err)
 	}
 	base32Hash := base32.StdEncoding.EncodeToString([]byte(strings.Repeat("a", 20)))
-	if got := magnetHash("magnet:?xt=urn:btih:" + strings.ToLower(base32Hash)); got != strings.Repeat("61", 20) {
+	if got := MagnetHash("magnet:?xt=urn:btih:" + strings.ToLower(base32Hash)); got != strings.Repeat("61", 20) {
 		t.Fatalf("base32 hash not recognized: %s", got)
 	}
 }

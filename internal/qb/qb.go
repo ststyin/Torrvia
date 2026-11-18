@@ -36,7 +36,10 @@ func New(base, user, pass string) *Client {
 		base: strings.TrimRight(base, "/"),
 		user: user,
 		pass: pass,
-		http: &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		http: &http.Client{Timeout: 30 * time.Second, Transport: tr,
+			// A redirect is not an API response. In particular a 307 may replay the login form.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -59,8 +62,11 @@ func (c *Client) login(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	if !strings.Contains(string(body), "Ok") {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "Ok." {
 		return fmt.Errorf("Downloader login failed; check the username and password")
 	}
 	for _, ck := range resp.Cookies() {
@@ -92,38 +98,20 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Probe submits an empty task to verify the submission route. HTTP 200 with Fails. confirms the route is reachable; HTTP 404 indicates a routing problem.
 func (c *Client) Probe(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.sid == "" {
-		if err := c.login(ctx); err != nil {
+	return c.withSession(ctx, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/v2/torrents/add", strings.NewReader("urls="))
+		if err != nil {
 			return err
 		}
-	}
-
-	form := url.Values{"urls": {""}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.base+"/api/v2/torrents/add", strings.NewReader(form.Encode()))
-	if err != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := c.request(req)
+		if err != nil {
+			return fmt.Errorf("Task submission route: %w", err)
+		}
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
 		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", c.base)
-	req.AddCookie(&http.Cookie{Name: "SID", Value: c.sid})
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("Failed to connect to downloader: %w", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("Task submission returned HTTP 404; check proxy or reverse proxy routing")
-	case resp.StatusCode >= 400:
-		return fmt.Errorf("Task submission returned HTTP %d", resp.StatusCode)
-	}
-	return nil
+	})
 }
 
 func (c *Client) withSession(ctx context.Context, fn func() error) error {

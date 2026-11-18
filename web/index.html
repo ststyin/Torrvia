@@ -262,7 +262,7 @@
 <dialog id="cfg" class="cfgdlg">
   <div class="dlg-head">Settings</div>
   <div class="dlg-body cfg-body">
-    <p class="cfgnote">Changes apply immediately, except for the listen address. Saved to <code id="cfgPath">config.toml</code>.</p>
+    <p class="cfgnote">Changes apply immediately, except for the listen address and data directory. Saved to <code id="cfgPath">config.toml</code>.</p>
 
     <div class="sec">Server</div>
     <div class="grid">
@@ -312,7 +312,7 @@ const token = {
 };
 const authHeaders = () => token.get() ? { Authorization: 'Bearer ' + token.get() } : {};
 
-let current = [];
+let searched = false;
 let aborter = null;
 
 function toast(msg) {
@@ -428,13 +428,13 @@ function row(t) {
   return tr;
 }
 
-function renderTable(items, note) {
+function renderTable(items) {
   const box = $('results');
   box.innerHTML = '';
   if (!items.length) {
     const d = document.createElement('div');
     d.className = 'empty';
-    d.textContent = note || 'No results. Try removing the year or using only the main title.';
+    d.textContent = 'No results. Try removing the year or using only the main title.';
     box.appendChild(d);
     return;
   }
@@ -487,7 +487,9 @@ async function search() {
   if (!keyword) { $('q').focus(); return; }
 
   if (aborter) aborter.abort();
-  aborter = new AbortController();
+  const controller = new AbortController();
+  aborter = controller;
+  searched = true;
 
   $('go').disabled = true;
   showErr('');
@@ -502,7 +504,7 @@ async function search() {
   try {
     const res = await fetch('/api/search/stream?' + params.toString(), {
       headers: authHeaders(),
-      signal: aborter.signal,
+      signal: controller.signal,
     });
     if (res.status === 401) {
       showErr('Invalid token. Click Token and enter the access token printed at startup.');
@@ -542,10 +544,9 @@ async function search() {
             Math.round(performance.now() - t0) + ' ms · Preview</span>';
           renderTable(preview.slice(0, 40));
         } else if (ev.type === 'error') {
-          showErr((ev.site_name || ev.site) + ': ' + ev.error);
+          showErr(ev.site ? (ev.site_name || ev.site) + ': ' + ev.error : ev.error);
         } else if (ev.type === 'done') {
-          current = ev.items || [];
-          renderTable(current);
+          renderTable(ev.items || []);
           $('status').innerHTML =
             '<span class="dot"></span><span>Results: ' + (ev.total || 0) + ' · ' +
             (ev.elapsed_ms || Math.round(performance.now() - t0)) + ' ms · ' +
@@ -558,7 +559,10 @@ async function search() {
       showErr('Search interrupted: ' + e.message);
     }
   } finally {
-    $('go').disabled = false;
+    if (aborter === controller) {
+      $('go').disabled = false;
+      aborter = null;
+    }
   }
 }
 
@@ -808,7 +812,7 @@ async function saveConfig() {
     if (!r.ok) { toast(data.error || 'Save failed'); return; }
     fillConfig(data.config);
     loadSites();
-    toast(data.restart_required ? 'Saved. Restart to apply the new listen address' : 'Saved and applied');
+    toast(data.restart_required ? 'Saved. Restart to apply server settings' : 'Saved and applied');
   } catch (e) {
     toast('Save failed: ' + e.message);
   } finally {
@@ -844,7 +848,7 @@ $('cfgRotate').onclick = async () => {
 $('go').onclick = search;
 $('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
 ['free', 'res', 'minSeed'].forEach((id) => $(id).addEventListener('change', () => {
-  if ($('q').value.trim() && current.length) search();
+  if ($('q').value.trim() && searched) search();
 }));
 
 // Search bookmarks can include /?q=Inception&t=<token>.
